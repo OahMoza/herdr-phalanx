@@ -1,6 +1,6 @@
 ---
 name: herdr-phalanx
-version: 0.6.0
+version: 0.6.1
 description: "Use when orchestrating multiple coding agents inside a Herdr TUI workspace. Triggers: Herdr pane/agent management, multi-agent team setup, parallel coding work, dispatcher role, ontology-based team design, evolving role/agent registry, open-world role pool, grid topology / 2x2 phalanx pane layout, per-tab agent cap. Built on open ontology: agent count and role set are NOT fixed — both grow at runtime via assign(). Hermes is the dispatcher, NEVER a pane-internal agent. NOT for single-agent tasks, casual shell use, or anything outside Herdr (HERDR_ENV must be 1)."
 platforms: [windows]
 ---
@@ -66,9 +66,10 @@ platforms: [windows]
 本 skill 设计为可演进。升级点全部集中在 `## Upgrade Hooks` 段落，运行时新增角色 / 员工 / 拓扑模式都从这里插入，不动本体论主干。版本号见 frontmatter 下方。
 
 ```
-version: 0.6.0
+version: 0.6.1
 schema: herdr-phalanx.onto.v1
 changelog:
+  - 0.6.1: 修复端到端测试发现的两个解析问题 + 新增 worker_done 解析 CLI + 30 个单元测试。①修复 parse_list_arg：omp 渲染输出 [a.py, b.py]（方括号无引号）之前被错误解析为 ['[a.py', 'b.py]']，现在正确解析为 ['a.py', 'b.py']；单元素 [string_utils.py] 之前变成 ['[string_utils.py]']，现在正确。②新增 parse_worker_done(text) 函数：兼容标准格式（## TASK_COMPLETE）、omp 渲染格式（去掉 ##、TASK_COMPLETE 与字段间有空行）、缺失字段降级、无标记时 parsed=false；端到端测试中 omp 输出的 TASK_COMPLETE 标记现在可正确解析。③新增 CLI 子命令 parse-worker-done（--text/--file，纯解析输出 JSON）和 dispatch-complete-from-output（--dispatch + --text/--file，解析后直接写库完成 dispatch），dispatcher 不再需要自己写正则。④新增 db/tests/test_phalanx_db.py：30 个 unittest 测试，覆盖 parse_list_arg（10 例）、parse_worker_done（11 例）、数据库操作（9 例，含 DAG 依赖自动计算/dispatch 重试/run 汇总统计/事件 append-only/解析+写库集成），全部通过（Ran 30 tests, OK）。
   - 0.6.0: 编排架构重大升级：外挂 sqlite 编排状态数据库（Phalanx DB），实现 Run/Task/Dispatch 三层模型 + 标准化任务清单 + DAG 依赖自动计算 + worker_done 外挂协议 + 事件驱动协调器循环。①新增 db/schema.sql（6 表 2 view：runs/tasks/dispatches/events/gates + ready_tasks/run_summary）和 db/phalanx_db.py CLI（18 个子命令，仅用 Python 标准库 sqlite3）；②Run/Task/Dispatch 三层模型借鉴 Orca orchestration，但完全基于 herdr 原生命令实现，herdr 只负责物理执行，Phalanx DB 负责编排状态；③DAG 依赖用 tasks.deps 字段（JSON 数组），ready_tasks view 自动计算依赖已满足的 task，dispatcher 不再手动推理依赖；④worker_done 外挂协议：解释 herdr 为何不能原生实现（被动 screen scraping、agent 不知 herdr 存在、无 dispatch --inject），通过 dispatcher 在 agent prompt 注入 preamble 要求输出 ## TASK_COMPLETE 标记 + pane wait-output --match 捕获来模拟，模板 templates/worker_done_preamble.md；⑤事件驱动协调器循环替代旧版 sleep 5s 轮询：用 herdr agent wait --until idle,done,blocked 阻塞等待，多 agent 并行用 PowerShell Start-Job + Wait-Job -Any，零消耗实时捕获，参考脚本 templates/coordinator_loop.ps1；⑥旧版协调器循环段落标记为已废弃但保留概念；⑦新增编排状态数据库段落（三层模型表/schema 概述/CLI 命令清单/DAG 自动工作原理/worker_done 协议）和事件驱动协调器段落（7 步循环/vs 旧版轮询对比表/PowerShell 并行等待模板/硬规则）。
   - 0.5.0: 项目重命名 herdr-orchestrator → herdr-phalanx（Phalanx=重步兵方阵，呼应 2×2 田字格编队）。①skill 内部 ID（frontmatter name + schema）全量改名，wiki/getting-started.md 同步；②迁移到 GitHub 项目 E:\WorkSpace\github\herdr-phalanx 作为唯一真实源，四处 agent skills 目录（.agents/.pi/opencode/hermes）改为指向该项目的符号链接；③description 补充 grid topology / 2x2 phalanx / per-tab cap 触发关键词；④历史 changelog 中旧路径名保留原样（作为当时事实记录）。
   - 0.4.2: 新增"分屏拓扑规则（Grid Topology：田字格 + 每 Tab 上限 4）"（用户 2026-09-05 定版）。①硬规则 T-Grid-1~5：同一 workspace 每个分身 tab 最多 4 个 agent、固定 2×2 田字，第 5 个开新分身 tab，dispatcher 独占指挥 tab，所有 split 用 --ratio 0.5 --no-focus；②田字切分算法实测验证（herdr v0.8.2，临时 tab 切 3 刀后用 pane layout 几何坐标确认等宽等高 2x2，测完关闭）：root down 分上下两行 → 上行 right → 下行 right；③槽位编号 slot1左上/slot2右上/slot3左下/slot4右下，分身序号→tab=floor(n/4)、slot=n mod 4 +1；④不足 4 个的增量渐进布局表（1全屏/2上下/3上二下一/4田字/5开新tab），保证扩容不重排已有 pane；⑤扩容操作流程（数 pane → 补 slot 或 tab create → agent start → pane layout 核对）；⑥最小工作流步骤1改为强制引用 Grid Topology，DAG 并行硬规则补"并行度超 4 开新 tab"，Upgrade Hooks topologies 段登记。
@@ -466,6 +467,11 @@ python db/phalanx_db.py dispatch-start --task <task_id> --agent-name dev1 --agen
 python db/phalanx_db.py dispatch-complete --dispatch <disp_id> --outcome succeeded --files "src/a.py,src/b.py" --summary "做了什么。发现了什么。还剩什么。"
 python db/phalanx_db.py dispatch-fail --dispatch <disp_id> --reason "编译错误"
 
+# worker_done 解析（v0.6.1 新增）
+python db/phalanx_db.py parse-worker-done --text "$(herdr agent read <name> --lines 100)"   # 纯解析，输出 JSON
+python db/phalanx_db.py parse-worker-done --file /tmp/agent-out.md                              # 从文件读取解析
+python db/phalanx_db.py dispatch-complete-from-output --dispatch <disp_id> --text "$(herdr agent read <name> --lines 100)"  # 解析+写库一步完成
+
 # 决策门 + 事件日志
 python db/phalanx_db.py gate-create --run <run_id> --type qa_verify --question "测试是否通过"
 python db/phalanx_db.py gate-resolve --gate <gate_id> --resolution pass
@@ -503,6 +509,16 @@ options: ["选项A", "选项B"]
 3. 降级：`herdr agent read` 读输出，正则解析 `## TASK_COMPLETE` 块
 
 解析后调用 `dispatch-complete` 写回 sqlite，outcome/files/summary 结构化存储。
+
+**推荐用法（v0.6.1）**：不要自己写正则，直接用 CLI 一步完成：
+```bash
+# 纯解析（调试用）
+python db/phalanx_db.py parse-worker-done --text "$(herdr agent read <name> --lines 100)"
+# 解析 + 写库（生产用）
+python db/phalanx_db.py dispatch-complete-from-output --dispatch <disp_id> --text "$(herdr agent read <name> --lines 100)"
+```
+
+**omp 渲染兼容性（v0.6.1 修复）**：omp 会把 `## TASK_COMPLETE` 渲染成标题（去掉 `##`），且 `TASK_COMPLETE` 与 `outcome:` 之间可能有空行，`files_modified` 的值可能不带引号（如 `[a.py, b.py]`）。`parse_worker_done` 已兼容以上所有格式，dispatcher 无需特殊处理。
 
 ---
 

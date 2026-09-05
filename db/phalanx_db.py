@@ -152,12 +152,13 @@ def cmd_run_status(args):
     conn.close()
 
 
-def parse_list_arg(value: str) -> str:
-    """Accept either a JSON array ('["a","b"]') or a comma-separated list ('a,b').
+def parse_list_arg(value) -> str:
+    """Accept JSON array ('["a","b"]'), comma-separated ('a,b'), or brackets without quotes ('[a, b]').
     Always returns a valid JSON array string."""
     if not value or value == "[]":
         return "[]"
-    value = value.strip()
+    value = str(value).strip()
+    # Try JSON parse first (handles ["a","b"] and [])
     if value.startswith("["):
         try:
             parsed = json.loads(value)
@@ -165,9 +166,85 @@ def parse_list_arg(value: str) -> str:
                 return json.dumps(parsed, ensure_ascii=False)
         except json.JSONDecodeError:
             pass
+        # JSON parse failed — likely [a, b] without quotes. Strip brackets.
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1]
     # Fallback: comma-separated
-    items = [s.strip() for s in value.split(",") if s.strip()]
+    items = [s.strip().strip('"').strip("'") for s in value.split(",") if s.strip()]
     return json.dumps(items, ensure_ascii=False)
+
+
+def parse_worker_done(text: str) -> dict:
+    """Parse TASK_COMPLETE marker from agent output.
+
+    Compatible with:
+    - Standard format: ## TASK_COMPLETE\\noutcome: succeeded\\nfiles_modified: [\"a.py\"]\\nsummary: ...
+    - omp rendered (no ##): TASK_COMPLETE\\noutcome: ...
+    - omp rendered (blank line between marker and fields): TASK_COMPLETE\\n\\noutcome: ...
+    - Missing fields: defaults applied
+
+    Returns: {parsed: bool, outcome: str, files_modified: list, summary: str, raw_marker: str}
+    """
+    result = {
+        "parsed": False,
+        "outcome": "succeeded",
+        "files_modified": [],
+        "summary": "",
+        "raw_marker": "",
+    }
+    if not text:
+        return result
+
+    # Find TASK_COMPLETE marker (with or without ## prefix)
+    import re
+    marker_pattern = re.compile(r"(?:##\s*)?TASK_COMPLETE\s*$", re.MULTILINE)
+    match = marker_pattern.search(text)
+    if not match:
+        return result
+
+    result["parsed"] = True
+    result["raw_marker"] = match.group(0).strip()
+
+    # Extract content after marker, up to next ## heading or end of text
+    after = text[match.end():]
+    # Stop at next ## heading (omp may render subsequent content as new heading)
+    next_heading = re.search(r"\n##\s", after)
+    if next_heading:
+        after = after[:next_heading.start()]
+
+    # Parse key: value lines (tolerate blank lines between fields)
+    fields = {}
+    for line in after.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("##"):
+            continue
+        if ":" in line:
+            key, _, val = line.partition(":")
+            key = key.strip().lower()
+            val = val.strip()
+            if key in ("outcome", "files_modified", "summary"):
+                fields[key] = val
+        # If we already have all 3 fields, stop (summary may be multi-line but we take first line)
+        if len(fields) >= 3:
+            break
+
+    if "outcome" in fields:
+        result["outcome"] = fields["outcome"].lower()
+        if result["outcome"] not in ("succeeded", "failed"):
+            result["outcome"] = "succeeded"
+
+    if "files_modified" in fields:
+        files_str = fields["files_modified"]
+        # Parse using parse_list_arg (handles JSON, comma, brackets-no-quotes)
+        try:
+            result["files_modified"] = json.loads(parse_list_arg(files_str))
+        except (json.JSONDecodeError, TypeError):
+            result["files_modified"] = []
+
+    if "summary" in fields:
+        result["summary"] = fields["summary"]
+
+    return result
 
 
 def cmd_task_add(args):
@@ -302,6 +379,50 @@ def cmd_dispatch_fail(args):
     conn.close()
 
 
+def cmd_parse_worker_done(args):
+    """Parse TASK_COMPLETE marker from agent output text (pure parsing, no DB write)."""
+    text = args.text
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+    result = parse_worker_done(text)
+    out(result)
+
+
+def cmd_dispatch_complete_from_output(args):
+    """Parse TASK_COMPLETE from agent output and complete the dispatch in one step."""
+    text = args.text
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+    parsed = parse_worker_done(text)
+
+    conn = get_db()
+    disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+    if not disp:
+        out({"error": f"dispatch not found: {args.dispatch}"})
+        sys.exit(1)
+
+    files_json = json.dumps(parsed["files_modified"], ensure_ascii=False)
+    conn.execute(
+        """UPDATE dispatches SET status='completed', outcome=?, files_modified=?, summary=?, completed_at=?
+           WHERE id=?""",
+        (parsed["outcome"], files_json, parsed["summary"], now(), args.dispatch),
+    )
+    task_status = "completed" if parsed["outcome"] == "succeeded" else "failed"
+    result = json.dumps({"outcome": parsed["outcome"], "summary": parsed["summary"],
+                          "files_modified": parsed["files_modified"]}, ensure_ascii=False)
+    conn.execute(
+        "UPDATE tasks SET status=?, result=?, updated_at=?, completed_at=? WHERE id=?",
+        (task_status, result, now(), now() if task_status == "completed" else None, disp["task_id"]),
+    )
+    event_type = "worker_done" if parsed["outcome"] == "succeeded" else "worker_failed"
+    log_event(conn, event_type, run_id=disp["run_id"], task_id=disp["task_id"], dispatch_id=args.dispatch,
+               payload={"outcome": parsed["outcome"], "summary": parsed["summary"], "parsed": parsed["parsed"]})
+    conn.commit()
+    row = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+    out(row_to_dict(row))
+    conn.close()
+
+
 def cmd_dispatch_list(args):
     conn = get_db()
     q = "SELECT * FROM dispatches WHERE 1=1"
@@ -431,6 +552,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dispatch", required=True)
     sp.add_argument("--reason", required=True)
     sp.set_defaults(func=cmd_dispatch_fail)
+
+    sp = sub.add_parser("parse-worker-done", help="Parse TASK_COMPLETE marker from agent output (pure parsing)")
+    sp.add_argument("--text", default="")
+    sp.add_argument("--file", help="Read agent output from file instead of --text")
+    sp.set_defaults(func=cmd_parse_worker_done)
+
+    sp = sub.add_parser("dispatch-complete-from-output", help="Parse TASK_COMPLETE from output and complete dispatch")
+    sp.add_argument("--dispatch", required=True)
+    sp.add_argument("--text", default="")
+    sp.add_argument("--file", help="Read agent output from file instead of --text")
+    sp.set_defaults(func=cmd_dispatch_complete_from_output)
 
     sp = sub.add_parser("dispatch-list")
     sp.add_argument("--run")

@@ -1,0 +1,425 @@
+"""
+Unit tests for phalanx_db.py
+Run: python -m unittest db.tests.test_phalanx_db -v
+"""
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+# Add parent dir to path so we can import phalanx_db
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import phalanx_db as db
+
+
+# ============================================================
+# TestParseListArg — 列表参数解析（JSON数组 / 逗号分隔 / 方括号无引号）
+# ============================================================
+
+class TestParseListArg(unittest.TestCase):
+    """parse_list_arg 必须同时支持 JSON 数组、逗号分隔、方括号无引号三种格式。"""
+
+    def test_json_array_with_quotes(self):
+        result = json.loads(db.parse_list_arg('["a.py", "b.py"]'))
+        self.assertEqual(result, ["a.py", "b.py"])
+
+    def test_comma_separated(self):
+        result = json.loads(db.parse_list_arg("a.py,b.py"))
+        self.assertEqual(result, ["a.py", "b.py"])
+
+    def test_brackets_without_quotes(self):
+        """omp 渲染输出 [a.py, b.py] 不带引号，必须正确解析为两个元素。"""
+        result = json.loads(db.parse_list_arg("[a.py, b.py]"))
+        self.assertEqual(result, ["a.py", "b.py"])
+
+    def test_single_brackets_without_quotes(self):
+        """omp 渲染输出 [string_utils.py]，必须解析为 ['string_utils.py']，
+        而不是 ['[string_utils.py]']（之前的 bug）。"""
+        result = json.loads(db.parse_list_arg("[string_utils.py]"))
+        self.assertEqual(result, ["string_utils.py"])
+
+    def test_empty_string(self):
+        result = json.loads(db.parse_list_arg(""))
+        self.assertEqual(result, [])
+
+    def test_empty_array(self):
+        result = json.loads(db.parse_list_arg("[]"))
+        self.assertEqual(result, [])
+
+    def test_single_item_no_brackets(self):
+        result = json.loads(db.parse_list_arg("a.py"))
+        self.assertEqual(result, ["a.py"])
+
+    def test_with_spaces_around_commas(self):
+        result = json.loads(db.parse_list_arg("a.py, b.py , c.py"))
+        self.assertEqual(result, ["a.py", "b.py", "c.py"])
+
+    def test_none_input(self):
+        result = json.loads(db.parse_list_arg(None))
+        self.assertEqual(result, [])
+
+    def test_json_array_with_chinese_paths(self):
+        result = json.loads(db.parse_list_arg('["src/登录.py", "docs/说明.md"]'))
+        self.assertEqual(result, ["src/登录.py", "docs/说明.md"])
+
+
+# ============================================================
+# TestParseWorkerDone — worker_done 标记解析（标准格式 / omp渲染格式）
+# ============================================================
+
+class TestParseWorkerDone(unittest.TestCase):
+    """parse_worker_done 必须兼容标准格式和 omp 渲染格式（## 被去掉、字段间有空行）。"""
+
+    def test_standard_format_with_hash(self):
+        text = """Some agent output here.
+
+## TASK_COMPLETE
+outcome: succeeded
+files_modified: ["a.py", "b.py"]
+summary: 做了A。发现了B。还剩C。
+"""
+        result = db.parse_worker_done(text)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["outcome"], "succeeded")
+        self.assertEqual(result["files_modified"], ["a.py", "b.py"])
+        self.assertIn("做了A", result["summary"])
+
+    def test_omp_rendered_no_hash(self):
+        """omp 把 ## TASK_COMPLETE 渲染成标题，去掉了 ##。"""
+        text = """Agent working...
+
+TASK_COMPLETE
+outcome: succeeded
+files_modified: ["string_utils.py"]
+summary: 创建了文件。无剩余。
+"""
+        result = db.parse_worker_done(text)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["outcome"], "succeeded")
+        self.assertEqual(result["files_modified"], ["string_utils.py"])
+
+    def test_omp_rendered_with_blank_line(self):
+        """omp 渲染时 TASK_COMPLETE 和 outcome 之间有空行。"""
+        text = """Done.
+
+TASK_COMPLETE
+
+outcome: succeeded
+files_modified: [test_reverse.py]
+summary: 3个测试全部通过。
+"""
+        result = db.parse_worker_done(text)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["outcome"], "succeeded")
+        self.assertEqual(result["files_modified"], ["test_reverse.py"])
+
+    def test_failed_outcome(self):
+        text = """## TASK_COMPLETE
+outcome: failed
+files_modified: []
+summary: 编译错误，无法完成。
+"""
+        result = db.parse_worker_done(text)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["outcome"], "failed")
+
+    def test_multiple_files(self):
+        text = """## TASK_COMPLETE
+outcome: succeeded
+files_modified: ["src/a.py", "src/b.py", "tests/test_a.py"]
+summary: 多文件修改。
+"""
+        result = db.parse_worker_done(text)
+        self.assertEqual(len(result["files_modified"]), 3)
+
+    def test_files_brackets_no_quotes_multiple(self):
+        """omp 输出 files_modified: [a.py, b.py] 不带引号。"""
+        text = """TASK_COMPLETE
+outcome: succeeded
+files_modified: [a.py, b.py]
+summary: done.
+"""
+        result = db.parse_worker_done(text)
+        self.assertEqual(result["files_modified"], ["a.py", "b.py"])
+
+    def test_missing_summary_defaults(self):
+        """缺失 summary 字段时，parsed=true 但 summary 为空字符串。"""
+        text = """## TASK_COMPLETE
+outcome: succeeded
+files_modified: ["a.py"]
+"""
+        result = db.parse_worker_done(text)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["summary"], "")
+
+    def test_missing_files_defaults_empty(self):
+        text = """## TASK_COMPLETE
+outcome: succeeded
+summary: 没改文件。
+"""
+        result = db.parse_worker_done(text)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["files_modified"], [])
+
+    def test_no_marker(self):
+        """完全没有 TASK_COMPLETE 标记时，parsed=false。"""
+        text = """Agent finished task but forgot to output marker.
+All done!
+"""
+        result = db.parse_worker_done(text)
+        self.assertFalse(result["parsed"])
+        self.assertEqual(result["outcome"], "succeeded")  # default
+        self.assertEqual(result["files_modified"], [])
+
+    def test_marker_in_middle_of_output(self):
+        """TASK_COMPLETE 在输出中间，前后都有内容。"""
+        text = """Thinking...
+Implementing...
+## TASK_COMPLETE
+outcome: succeeded
+files_modified: ["x.py"]
+summary: done.
+Some trailing text.
+"""
+        result = db.parse_worker_done(text)
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["outcome"], "succeeded")
+
+
+# ============================================================
+# TestDatabaseOperations — sqlite 数据库操作（每个测试用独立临时库）
+# ============================================================
+
+class TestDatabaseOperations(unittest.TestCase):
+    """数据库操作测试，每个测试用独立的临时 sqlite 文件，测试间互不影响。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.tmpdir, "test.db")
+        os.environ["PHALANX_DB"] = self.db_path
+        # init db
+        conn = db.get_db()
+        schema = db.schema_path().read_text(encoding="utf-8")
+        conn.executescript(schema)
+        conn.close()
+
+    def tearDown(self):
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
+        if os.path.exists(self.db_path + "-wal"):
+            os.remove(self.db_path + "-wal")
+        if os.path.exists(self.db_path + "-shm"):
+            os.remove(self.db_path + "-shm")
+        os.environ.pop("PHALANX_DB", None)
+
+    def _create_run(self, objective="test run"):
+        conn = db.get_db()
+        run_id = db.gen_id("run")
+        conn.execute("INSERT INTO runs (id, objective) VALUES (?,?)", (run_id, objective))
+        conn.commit()
+        conn.close()
+        return run_id
+
+    def _create_task(self, run_id, spec="task", deps="[]", status="pending"):
+        conn = db.get_db()
+        task_id = db.gen_id("task")
+        conn.execute(
+            "INSERT INTO tasks (id, run_id, spec, deps, status) VALUES (?,?,?,?,?)",
+            (task_id, run_id, spec, deps, status),
+        )
+        conn.commit()
+        conn.close()
+        return task_id
+
+    def test_init_db_creates_tables(self):
+        """初始化后 6 张表 + 2 个 view 必须存在。"""
+        conn = db.get_db()
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()]
+        views = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
+        ).fetchall()]
+        conn.close()
+        self.assertIn("runs", tables)
+        self.assertIn("tasks", tables)
+        self.assertIn("dispatches", tables)
+        self.assertIn("events", tables)
+        self.assertIn("gates", tables)
+        self.assertIn("ready_tasks", views)
+        self.assertIn("run_summary", views)
+
+    def test_run_create_persists(self):
+        run_id = self._create_run("test objective")
+        conn = db.get_db()
+        row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        conn.close()
+        self.assertEqual(row["objective"], "test objective")
+        self.assertEqual(row["status"], "active")
+
+    def test_task_add_with_deps(self):
+        run_id = self._create_run()
+        t1 = self._create_task(run_id, "task1")
+        t2 = self._create_task(run_id, "task2", deps=json.dumps([t1]))
+        conn = db.get_db()
+        row = conn.execute("SELECT deps FROM tasks WHERE id=?", (t2,)).fetchone()
+        conn.close()
+        self.assertEqual(json.loads(row["deps"]), [t1])
+
+    def test_ready_tasks_view_dependency_logic(self):
+        """依赖未完成时 task 不在 ready_tasks；依赖完成后自动出现。"""
+        run_id = self._create_run()
+        t1 = self._create_task(run_id, "task1")
+        t2 = self._create_task(run_id, "task2", deps=json.dumps([t1]))
+
+        conn = db.get_db()
+        # t1 pending, t2 should NOT be ready
+        ready = [r["id"] for r in conn.execute(
+            "SELECT id FROM ready_tasks WHERE run_id=?", (run_id,)
+        ).fetchall()]
+        self.assertIn(t1, ready)
+        self.assertNotIn(t2, ready)
+
+        # complete t1
+        conn.execute("UPDATE tasks SET status='completed' WHERE id=?", (t1,))
+        conn.commit()
+
+        # now t2 should be ready
+        ready = [r["id"] for r in conn.execute(
+            "SELECT id FROM ready_tasks WHERE run_id=?", (run_id,)
+        ).fetchall()]
+        self.assertIn(t2, ready)
+        conn.close()
+
+    def test_dispatch_start_updates_task_status(self):
+        run_id = self._create_run()
+        t1 = self._create_task(run_id, "task1")
+        conn = db.get_db()
+        disp_id = db.gen_id("disp")
+        conn.execute(
+            "INSERT INTO dispatches (id, task_id, run_id, agent_name, agent_kind, pane_id) VALUES (?,?,?,?,?,?)",
+            (disp_id, t1, run_id, "dev1", "omp", "w1:p1"),
+        )
+        conn.execute("UPDATE tasks SET status='dispatched', retry_count=retry_count+1 WHERE id=?", (t1,))
+        conn.commit()
+        task = conn.execute("SELECT status, retry_count FROM tasks WHERE id=?", (t1,)).fetchone()
+        conn.close()
+        self.assertEqual(task["status"], "dispatched")
+        self.assertEqual(task["retry_count"], 1)
+
+    def test_dispatch_complete_succeeded_marks_task_completed(self):
+        run_id = self._create_run()
+        t1 = self._create_task(run_id, "task1", status="dispatched")
+        conn = db.get_db()
+        disp_id = db.gen_id("disp")
+        conn.execute(
+            "INSERT INTO dispatches (id, task_id, run_id, status) VALUES (?,?,?,'running')",
+            (disp_id, t1, run_id),
+        )
+        conn.execute(
+            "UPDATE dispatches SET status='completed', outcome='succeeded', files_modified='[\"a.py\"]', summary='done', completed_at=? WHERE id=?",
+            (db.now(), disp_id),
+        )
+        conn.execute("UPDATE tasks SET status='completed', result=?, completed_at=? WHERE id=?",
+                     (json.dumps({"outcome": "succeeded"}), db.now(), t1))
+        conn.commit()
+        task = conn.execute("SELECT status FROM tasks WHERE id=?", (t1,)).fetchone()
+        disp = conn.execute("SELECT status, outcome FROM dispatches WHERE id=?", (disp_id,)).fetchone()
+        conn.close()
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(disp["status"], "completed")
+        self.assertEqual(disp["outcome"], "succeeded")
+
+    def test_dispatch_fail_within_retry_limit_returns_task_to_pending(self):
+        """失败但未超重试上限时，task 回到 pending 可重试。"""
+        run_id = self._create_run()
+        t1 = self._create_task(run_id, "task1", status="dispatched")
+        conn = db.get_db()
+        # set retry_count=1, max_retries=3
+        conn.execute("UPDATE tasks SET retry_count=1, max_retries=3 WHERE id=?", (t1,))
+        disp_id = db.gen_id("disp")
+        conn.execute(
+            "INSERT INTO dispatches (id, task_id, run_id, status) VALUES (?,?,?,'running')",
+            (disp_id, t1, run_id),
+        )
+        conn.execute("UPDATE dispatches SET status='failed', outcome='failed', failure_reason='error', completed_at=? WHERE id=?",
+                     (db.now(), disp_id))
+        # retry_count(1) < max_retries(3) → pending
+        conn.execute("UPDATE tasks SET status='pending' WHERE id=?", (t1,))
+        conn.commit()
+        task = conn.execute("SELECT status FROM tasks WHERE id=?", (t1,)).fetchone()
+        conn.close()
+        self.assertEqual(task["status"], "pending")
+
+    def test_run_summary_stats(self):
+        run_id = self._create_run()
+        self._create_task(run_id, "t1", status="completed")
+        self._create_task(run_id, "t2", status="failed")
+        self._create_task(run_id, "t3", status="pending")
+        self._create_task(run_id, "t4", status="dispatched")
+        conn = db.get_db()
+        row = conn.execute("SELECT * FROM run_summary WHERE id=?", (run_id,)).fetchone()
+        conn.close()
+        self.assertEqual(row["total_tasks"], 4)
+        self.assertEqual(row["completed_tasks"], 1)
+        self.assertEqual(row["failed_tasks"], 1)
+        self.assertEqual(row["pending_tasks"], 1)  # pending + ready
+        self.assertEqual(row["running_tasks"], 1)  # dispatched + running
+
+    def test_event_log_append_only(self):
+        run_id = self._create_run()
+        conn = db.get_db()
+        db.log_event(conn, "run_created", run_id=run_id, payload={"a": 1})
+        db.log_event(conn, "task_created", run_id=run_id, payload={"b": 2})
+        conn.commit()
+        count = conn.execute("SELECT COUNT(*) FROM events WHERE run_id=?", (run_id,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 2)
+
+    def test_parse_worker_done_integration(self):
+        """parse_worker_done 与数据库的集成：解析后可直接用于 dispatch-complete。"""
+        run_id = self._create_run()
+        t1 = self._create_task(run_id, "task1", status="dispatched")
+        conn = db.get_db()
+        disp_id = db.gen_id("disp")
+        conn.execute(
+            "INSERT INTO dispatches (id, task_id, run_id, status) VALUES (?,?,?,'running')",
+            (disp_id, t1, run_id),
+        )
+        conn.commit()
+        conn.close()
+
+        # 模拟 omp 渲染输出
+        agent_output = """Done working.
+
+TASK_COMPLETE
+
+outcome: succeeded
+files_modified: [src/app.py, tests/test_app.py]
+summary: 实现了功能。发现了边界问题。无剩余。
+"""
+        parsed = db.parse_worker_done(agent_output)
+        self.assertTrue(parsed["parsed"])
+        self.assertEqual(parsed["outcome"], "succeeded")
+        self.assertEqual(parsed["files_modified"], ["src/app.py", "tests/test_app.py"])
+
+        # 用解析结果完成 dispatch
+        conn = db.get_db()
+        files_json = json.dumps(parsed["files_modified"], ensure_ascii=False)
+        conn.execute(
+            "UPDATE dispatches SET status='completed', outcome=?, files_modified=?, summary=?, completed_at=? WHERE id=?",
+            (parsed["outcome"], files_json, parsed["summary"], db.now(), disp_id),
+        )
+        conn.execute("UPDATE tasks SET status='completed' WHERE id=?", (t1,))
+        conn.commit()
+        task = conn.execute("SELECT status FROM tasks WHERE id=?", (t1,)).fetchone()
+        conn.close()
+        self.assertEqual(task["status"], "completed")
+
+
+if __name__ == "__main__":
+    unittest.main()
