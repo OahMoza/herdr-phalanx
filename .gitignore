@@ -1,0 +1,15 @@
+# Herdr Phalanx skill - gitignore
+#
+# Rule (P6 / WikiSkill Raw Layer): raw.jsonl is append-only fact stream,
+# contains per-machine specifics (pane IDs, session IDs, transient state).
+# It ages fast and should NOT be versioned.
+#
+# What IS versioned:
+#   SKILL.md              <- Skill Layer
+#   references/*.md       <- condensed fact cards
+#   wiki/*.md             <- Wiki Layer (distilled knowledge)
+#
+# What is NOT versioned:
+#   runs/                 <- Raw Layer (this dir)
+
+runs/
