@@ -1,6 +1,6 @@
 ---
 name: herdr-phalanx
-version: 0.5.0
+version: 0.6.0
 description: "Use when orchestrating multiple coding agents inside a Herdr TUI workspace. Triggers: Herdr pane/agent management, multi-agent team setup, parallel coding work, dispatcher role, ontology-based team design, evolving role/agent registry, open-world role pool, grid topology / 2x2 phalanx pane layout, per-tab agent cap. Built on open ontology: agent count and role set are NOT fixed — both grow at runtime via assign(). Hermes is the dispatcher, NEVER a pane-internal agent. NOT for single-agent tasks, casual shell use, or anything outside Herdr (HERDR_ENV must be 1)."
 platforms: [windows]
 ---
@@ -66,9 +66,10 @@ platforms: [windows]
 本 skill 设计为可演进。升级点全部集中在 `## Upgrade Hooks` 段落，运行时新增角色 / 员工 / 拓扑模式都从这里插入，不动本体论主干。版本号见 frontmatter 下方。
 
 ```
-version: 0.5.0
+version: 0.6.0
 schema: herdr-phalanx.onto.v1
 changelog:
+  - 0.6.0: 编排架构重大升级：外挂 sqlite 编排状态数据库（Phalanx DB），实现 Run/Task/Dispatch 三层模型 + 标准化任务清单 + DAG 依赖自动计算 + worker_done 外挂协议 + 事件驱动协调器循环。①新增 db/schema.sql（6 表 2 view：runs/tasks/dispatches/events/gates + ready_tasks/run_summary）和 db/phalanx_db.py CLI（18 个子命令，仅用 Python 标准库 sqlite3）；②Run/Task/Dispatch 三层模型借鉴 Orca orchestration，但完全基于 herdr 原生命令实现，herdr 只负责物理执行，Phalanx DB 负责编排状态；③DAG 依赖用 tasks.deps 字段（JSON 数组），ready_tasks view 自动计算依赖已满足的 task，dispatcher 不再手动推理依赖；④worker_done 外挂协议：解释 herdr 为何不能原生实现（被动 screen scraping、agent 不知 herdr 存在、无 dispatch --inject），通过 dispatcher 在 agent prompt 注入 preamble 要求输出 ## TASK_COMPLETE 标记 + pane wait-output --match 捕获来模拟，模板 templates/worker_done_preamble.md；⑤事件驱动协调器循环替代旧版 sleep 5s 轮询：用 herdr agent wait --until idle,done,blocked 阻塞等待，多 agent 并行用 PowerShell Start-Job + Wait-Job -Any，零消耗实时捕获，参考脚本 templates/coordinator_loop.ps1；⑥旧版协调器循环段落标记为已废弃但保留概念；⑦新增编排状态数据库段落（三层模型表/schema 概述/CLI 命令清单/DAG 自动工作原理/worker_done 协议）和事件驱动协调器段落（7 步循环/vs 旧版轮询对比表/PowerShell 并行等待模板/硬规则）。
   - 0.5.0: 项目重命名 herdr-orchestrator → herdr-phalanx（Phalanx=重步兵方阵，呼应 2×2 田字格编队）。①skill 内部 ID（frontmatter name + schema）全量改名，wiki/getting-started.md 同步；②迁移到 GitHub 项目 E:\WorkSpace\github\herdr-phalanx 作为唯一真实源，四处 agent skills 目录（.agents/.pi/opencode/hermes）改为指向该项目的符号链接；③description 补充 grid topology / 2x2 phalanx / per-tab cap 触发关键词；④历史 changelog 中旧路径名保留原样（作为当时事实记录）。
   - 0.4.2: 新增"分屏拓扑规则（Grid Topology：田字格 + 每 Tab 上限 4）"（用户 2026-09-05 定版）。①硬规则 T-Grid-1~5：同一 workspace 每个分身 tab 最多 4 个 agent、固定 2×2 田字，第 5 个开新分身 tab，dispatcher 独占指挥 tab，所有 split 用 --ratio 0.5 --no-focus；②田字切分算法实测验证（herdr v0.8.2，临时 tab 切 3 刀后用 pane layout 几何坐标确认等宽等高 2x2，测完关闭）：root down 分上下两行 → 上行 right → 下行 right；③槽位编号 slot1左上/slot2右上/slot3左下/slot4右下，分身序号→tab=floor(n/4)、slot=n mod 4 +1；④不足 4 个的增量渐进布局表（1全屏/2上下/3上二下一/4田字/5开新tab），保证扩容不重排已有 pane；⑤扩容操作流程（数 pane → 补 slot 或 tab create → agent start → pane layout 核对）；⑥最小工作流步骤1改为强制引用 Grid Topology，DAG 并行硬规则补"并行度超 4 开新 tab"，Upgrade Hooks topologies 段登记。
   - 0.4.1: 修复并 verified claudecode（Claude Code v2.1.260 / Opus 4.8 1M）。两层根因：①native binary 缺失——bin/claude.exe 是 500 bytes 占位脚本，用 `npm i -g @anthropic-ai/claude-code --include=optional` 补装 208MB 真二进制；②npm shim 干扰——herdr 的 `Start-Process -FilePath claude` 在同目录 claude.cmd 与 claude.exe 并存时误选 .cmd 文本当 PE 加载报 Win32 193，把无扩展名 claude/claude.cmd/claude.ps1 改名 .bak、PATH 只留 claude.exe 后修复。冒烟全链路通过（start interactive_ready → prompt done 3s → read 见 CLAUDE_SMOKE_OK + bypass permissions）。新增 P9（Windows npm 全局 agent 的 193 启动坑 + 通用规律 + 验证标准 + 无害 hook 告警说明）；员工表/P5/任务分配硬规则/Upgrade Hooks/P8 共 6 处把 claudecode 从"未安装/待冒烟"升为第 4 个 verified 持续对话 agent。
@@ -345,31 +346,29 @@ Task A (需求拆解) → done → ┌─ Task B1 (前端) ─┐
 
 ### 协调器循环（Coordinator Loop）
 
+> ⚠️ **v0.6.0 起，本段落的 sleep 轮询实现已废弃**。改用事件驱动协调器循环，见 `## 事件驱动协调器循环` 段落。这里保留核心概念（8 步扫描-派活循环），但实现方式从 sleep 轮询改为 `agent wait --until` 阻塞等待。
+
 dispatcher 不是一次性派活就结束，而是进入持续监控循环，动态调整任务分配。
 
-**循环结构：**
+**循环概念（8 步，实现见事件驱动段落）：**
 
 ```
-┌─────────────────────────────────────────────────┐
-│  1. 扫描所有 agent 状态（agent list）              │
-│  2. 检查 DAG 中 pending 任务是否可启动（依赖满足？） │
-│  3. 检查 running 任务是否超时（超过预期时间？）      │
-│  4. 检查 blocked 任务是否需要 dispatcher 输入       │
-│  5. 检查 done 任务是否通过决策门                    │
-│  6. 检查 failed 任务是否需要回退/升级               │
-│  7. 有可启动的 pending 任务 → 派活（agent prompt）  │
-│  8. 所有任务 done 或 DAG 暂停 → 退出循环            │
-└──────────────────────┬──────────────────────────┘
-                       │
-                       └── 循环（sleep 5s 后重复）
+1. 扫描所有 agent 状态（agent list / run-status）
+2. 检查 DAG 中 pending 任务是否可启动（task-ready 自动算依赖）
+3. 检查 running 任务是否超时（超过预期时间？）
+4. 检查 blocked 任务是否需要 dispatcher 输入
+5. 检查 done 任务是否通过决策门
+6. 检查 failed 任务是否需要回退/升级
+7. 有可启动的 pending 任务 → 派活（agent prompt + dispatch-start）
+8. 所有任务 done 或 DAG 暂停 → 退出循环
 ```
 
 **协调器循环硬规则：**
-- 每次循环必须先 `agent list` 扫描全量状态，禁止凭记忆判断
+- 每次循环必须先查 `run-status` + `task-ready`，禁止凭记忆判断
 - 超时阈值按任务类型设定：简单任务 60s，中等任务 300s，复杂任务 900s
 - blocked 任务必须在 30s 内响应（agent get + agent read + 提供输入）
-- 循环间隔建议 5-10s，避免频繁扫描影响 agent
-- 循环退出条件：所有任务 done **且** 通过最终决策门，或用户中断，或 DAG 暂停等待用户决策
+- **禁止用 sleep 轮询**——必须用 `agent wait --until` 或 `pane wait-output --match` 阻塞等待（见事件驱动段落）
+- 循环退出条件：所有任务 completed **且** 通过最终决策门，或用户中断，或 DAG 暂停等待用户决策
 
 ### 升级机制（Escalation）
 
@@ -405,6 +404,169 @@ Level 4: 问用户（明确说明失败原因、已尝试的方案、需要用�
 - Level 4 问用户时必须给出**具体选项**，不能只说"失败了怎么办"
 - 禁止跳过升级路径直接问用户（Level 1-3 必须先尝试）
 - 升级后原任务标记为 `blocked`（等待用户/更高级 agent），不占用 worker
+
+---
+
+## 编排状态数据库（Phalanx DB：Run / Task / Dispatch 三层模型）
+
+> v0.6.0 新增。herdr 原生只有物理层（Session/Workspace/Tab/Pane）和 agent 状态检测（idle/working/blocked/done/unknown），**没有**任务编排层（Run/Task/Dispatch、DAG 依赖、worker_done 协议）。我们用 sqlite 在 skill 层外挂一个编排状态数据库，herdr 只负责物理执行，Phalanx DB 负责编排状态。这是借鉴 Orca orchestration 的 Run/Task/Dispatch 三层模型，但完全基于 herdr 原生命令实现，不引入外部依赖。
+
+### 为什么 herdr 不能原生实现 worker_done（关键认知）
+
+herdr 的 agent 检测是**被动 screen scraping**：它读 pane 终端输出，用特征匹配判断 agent 处于什么状态（看到权限弹窗→blocked，看到提示符→idle/done），但**不解析输出内容的语义**。omp/claudecode 这些 agent 启动时**不知道自己跑在 herdr 里**，不会主动发"我完成了"消息。
+
+Orca 能做 worker_done，是因为它用 `dispatch --inject` 把生命周期 preamble 注入到 agent prompt，agent 被要求完成后调用 `orca orchestration send --type worker_done`——这是 Orca 特有的客户端协议。herdr 没有这个注入机制。
+
+**但我们可以模拟**：dispatcher 在 `agent prompt` 时注入 preamble，要求 agent 完成后输出固定标记 `## TASK_COMPLETE`，然后用 `pane wait-output --match "## TASK_COMPLETE"` 或 `agent wait --until idle,done` 捕获，解析后写回 sqlite。这是**外挂式 worker_done 协议**。
+
+### 三层模型
+
+```
+Run（一次编排会话）
+  └── Task（工作项定义，可重试，有 DAG 依赖）
+        └── Dispatch（Task 的一次具体执行尝试，分配给某个 agent/pane）
+```
+
+| 层 | 对应 Orca | 职责 | 状态 |
+|---|---|---|---|
+| **Run** | Run | 一次编排会话的命名空间，所有 task/dispatch/events 的归属 | active / completed / failed / aborted |
+| **Task** | Task | 工作项定义，可重试，有 DAG 依赖（deps 字段） | pending / ready / dispatched / completed / failed / blocked / skipped |
+| **Dispatch** | Dispatch | Task 的一次具体执行尝试，每次重试产生新 Dispatch | running / completed / failed / blocked / abandoned |
+
+**关键区别**：Task 是"要做什么"（可重试），Dispatch 是"谁在做、做的结果"（一次尝试）。同一个 Task 失败重试会产生新的 Dispatch，重试历史完整保留。
+
+### sqlite 数据库
+
+- **路径**：默认 `~/.herdr-phalanx/phalanx.db`，环境变量 `PHALANX_DB` 可覆盖
+- **schema**：`db/schema.sql`（6 张表 + 2 个 view）
+  - `runs` / `tasks` / `dispatches` / `events`（append-only 事件日志）/ `gates`（决策门）
+  - `ready_tasks` view：自动计算依赖已全部完成的 task（协调器循环用这个派活）
+  - `run_summary` view：Run 的汇总统计（total/completed/failed/running/pending）
+- **管理 CLI**：`db/phalanx_db.py`（Python 3.10+，仅用标准库 sqlite3）
+
+### phalanx_db.py 常用命令
+
+```bash
+# 初始化数据库
+python db/phalanx_db.py init-db
+
+# Run 管理
+python db/phalanx_db.py run-create --objective "实现登录功能" --workspace w1
+python db/phalanx_db.py run-status --run <run_id>
+python db/phalanx_db.py run-list
+
+# Task 管理（--deps 支持 JSON 数组或逗号分隔）
+python db/phalanx_db.py task-add --run <run_id> --spec "设计API" --role Architect --agent claudecode
+python db/phalanx_db.py task-add --run <run_id> --spec "实现登录" --deps <task1_id> --role Developer --agent omp
+python db/phalanx_db.py task-ready --run <run_id>    # 查可派活的 task（依赖已满足）
+python db/phalanx_db.py task-list --run <run_id> --status pending
+
+# Dispatch 管理
+python db/phalanx_db.py dispatch-start --task <task_id> --agent-name dev1 --agent-kind omp --pane w1:p3 --tab w1:t3
+python db/phalanx_db.py dispatch-complete --dispatch <disp_id> --outcome succeeded --files "src/a.py,src/b.py" --summary "做了什么。发现了什么。还剩什么。"
+python db/phalanx_db.py dispatch-fail --dispatch <disp_id> --reason "编译错误"
+
+# 决策门 + 事件日志
+python db/phalanx_db.py gate-create --run <run_id> --type qa_verify --question "测试是否通过"
+python db/phalanx_db.py gate-resolve --gate <gate_id> --resolution pass
+python db/phalanx_db.py event-log --run <run_id> --limit 20
+```
+
+### DAG 依赖如何自动工作
+
+1. 创建 Task 时用 `--deps` 声明依赖（JSON 数组或逗号分隔）
+2. `ready_tasks` view 自动过滤：status=pending **且**所有 deps 的 task 都已 completed
+3. 协调器循环每轮查 `task-ready`，得到可派活的 task 列表，自动派活
+4. 前置 task 完成后，后置 task 自动出现在 ready 队列——**不需要 dispatcher 手动推理依赖关系**
+
+### worker_done 外挂协议
+
+**Preamble 模板**：`templates/worker_done_preamble.md`，注入到 agent prompt 开头，要求 agent 完成后输出：
+
+```
+## TASK_COMPLETE
+outcome: succeeded|failed
+files_modified: ["path/a", "path/b"]
+summary: 做了什么。发现了什么。还剩什么。
+```
+
+需要提问时输出：
+```
+## TASK_ASK
+question: 你的问题
+options: ["选项A", "选项B"]
+```
+
+**dispatcher 捕获方式**（优先级从高到低）：
+1. `herdr pane wait-output <pane_id> --match "## TASK_COMPLETE" --timeout <MS>` —— 等结构化标记
+2. `herdr agent wait <name> --until idle,done,blocked --timeout <MS>` —— 等 agent 状态变化（herdr 原生阻塞等待）
+3. 降级：`herdr agent read` 读输出，正则解析 `## TASK_COMPLETE` 块
+
+解析后调用 `dispatch-complete` 写回 sqlite，outcome/files/summary 结构化存储。
+
+---
+
+## 事件驱动协调器循环（v0.6.0 替代旧版 sleep 轮询）
+
+> 旧版协调器循环用 `sleep 5s + agent list` 轮询，效率低、延迟高、可能错过瞬态变化。v0.6.0 起改用**事件驱动**：用 herdr 原生的 `agent wait --until` 阻塞等待，多 agent 并行用 PowerShell 后台 job，哪个先完成先处理哪个。
+
+### 核心循环（7 步）
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ 1. run-status 查 Run 状态 → 全部 completed 则退出循环     │
+│ 2. task-ready 查可派活的 task（依赖已满足的 pending）      │
+│ 3. 对每个 ready task：                                     │
+│    a. 按 Grid Topology 分配 pane（田字格/超4开新tab）      │
+│    b. agent start（带 bypass 参数，见 P8）                 │
+│    c. dispatch-start（写 sqlite）                          │
+│    d. agent prompt（注入 worker_done preamble + task spec）│
+│       用 --wait 阻塞等完成，或 agent wait --until idle,done│
+│ 4. 收集当前 running 的 dispatch                             │
+│ 5. 事件驱动等待：并行 agent wait，等第一个完成的 agent      │
+│    （PowerShell: Start-Job + Wait-Job -Any）              │
+│ 6. 读输出 → 解析 ## TASK_COMPLETE → dispatch-complete      │
+│ 7. 回到第 1 步（新的 ready task 会自动出现）                │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 事件驱动 vs 旧版轮询
+
+| 维度 | 旧版（sleep 轮询） | 新版（事件驱动） |
+|---|---|---|
+| 等待方式 | `sleep 5s` 后 `agent list` | `agent wait --until idle,done,blocked` 阻塞 |
+| 延迟 | 最高 5s | 实时（状态变化立即返回） |
+| 资源 | 每 5s 一次全量扫描 | 阻塞等待，零消耗 |
+| 多 agent | 逐个检查 | 并行 wait，Wait-Job -Any 先到先处理 |
+| 瞬态变化 | 可能错过（5s 内完成又开始新任务） | 不会错过（阻塞等待精确捕获） |
+
+### PowerShell 并行等待模板
+
+```powershell
+# 并行等待多个 agent，返回第一个完成的
+function Wait-AnyAgent($agentNames, $timeoutMs = 900000) {
+    $jobs = foreach ($name in $agentNames) {
+        Start-Job -ScriptBlock {
+            param($n, $t)
+            herdr agent wait $n --until idle,done,blocked --timeout $t 2>&1
+        } -ArgumentList $name, $timeoutMs
+    }
+    $done = $jobs | Wait-Job -Any
+    $result = $done | Receive-Job
+    $jobs | Stop-Job -PassThru | Remove-Job -Force
+    return $result
+}
+```
+
+参考脚本：`templates/coordinator_loop.ps1`（完整的事件驱动协调器循环模板）。
+
+### 事件驱动的硬规则
+
+- **禁止**在协调器循环里用 `sleep` 轮询 agent 状态——必须用 `agent wait --until` 或 `pane wait-output --match` 阻塞等待
+- 多 agent 并行时必须用后台 job + `Wait-Job -Any`，不能逐个串行 wait（会阻塞其他 agent 的完成检测）
+- `agent wait` 的 `--timeout` 必须设置（建议 900000ms = 15 分钟），超时视为 checkpoint 不是失败（长任务可能跑 15-60 分钟）
+- 超时后检查 `agent get` 确认 agent 是否还在 working，在则继续 wait，不在则标记 failed
+- heartbeat（agent 仍在 working 但长时间无输出）不视为完成，继续 wait
 
 ---
 
@@ -761,7 +923,7 @@ herdr agent start hc-dev --kind hermes --pane w1:pN -- --profile coding
 - `roles:` — 新增角色。例：`SRE` / `TechWriter` / `SecurityReviewer`。v0.2.0 新增 WikiSkill 三角色：`WikiMaintainer` / `SkillProposer` / `GatingReviewer`。
 - `topologies:` — 新增团队原型。在 `## 团队形态` 段落登记。v0.4.2 起**物理分屏拓扑强制走 `## 分屏拓扑规则（Grid Topology）`**：dispatcher 独占指挥 tab；分身 tab 固定 2×2 田字、每 tab 上限 4、超 4 开新 tab；田字 3 刀切分算法（root down → 上行 right → 下行 right，均 --ratio 0.5）已用 `pane layout` 几何坐标实测验证；分身序号→tab/slot 映射 = tab=floor(n/4)、slot=n mod 4 +1。
 - `artifacts:` — 共享笔记 / 任务账本格式。**建议格式**（v0.2.8 起）：每个任务在 `runs/<task-id>/` 下建 `task.md`，包含：任务描述、owner agent、分配角色、状态（pending/running/blocked/done/failed）、产出文件列表、验证证据。原始执行 trace 存 `runs/<task-id>/raw.jsonl`（append-only）。v0.2.0 起新增 `wiki/<topic-slug>.md`（WikiArticle 的落盘形态）。
-- `protocols:` — 跨 agent 通信协议（如 shared file 路径、消息格式）。v0.2.0 起新增 WikiSkill 循环协议（详见 `evolution:` 段）。v0.4.0 起新增**任务编排协议**（详见 `## 任务编排模式` 段）：任务状态机（pending/running/blocked/done/failed 转换规则）、任务 DAG（并行独立/依赖链/扇出-扇入三种模式）、决策门（5 个标准决策门+通过/回退/升级三分支）、协调器循环（8 步扫描-派活循环）、升级机制（Level 0-4 五级升级路径）。
+- `protocols:` — 跨 agent 通信协议（如 shared file 路径、消息格式）。v0.2.0 起新增 WikiSkill 循环协议（详见 `evolution:` 段）。v0.4.0 起新增**任务编排协议**（详见 `## 任务编排模式` 段）：任务状态机（pending/running/blocked/done/failed 转换规则）、任务 DAG（并行独立/依赖链/扇出-扇入三种模式）、决策门（5 个标准决策门+通过/回退/升级三分支）、协调器循环（8 步扫描-派活循环）、升级机制（Level 0-4 五级升级路径）。v0.6.0 起新增**编排状态数据库协议**（详见 `## 编排状态数据库` 段）：Run/Task/Dispatch 三层模型（sqlite 持久化）、DAG 依赖自动计算（ready_tasks view）、worker_done 外挂协议（## TASK_COMPLETE 标记 + pane wait-output 捕获）、事件驱动协调器循环（agent wait --until 阻塞等待替代 sleep 轮询）。
 - `evolution:` — 启用（v0.2.1）。WikiSkill 自演化协议（详见 `references/wikiskill-paper.md`），循环结构：
 
   ```

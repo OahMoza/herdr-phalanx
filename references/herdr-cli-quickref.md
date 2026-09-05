@@ -104,3 +104,33 @@ herdr integration install <kind>   # 安装指定 agent 的 integration（lifecy
 | GitHub Copilot CLI | screen manifest | session |
 
 > 未安装 integration 时，herdr 用 screen manifest 检测 idle，可能存在 TUI 提示行格式不匹配导致超时的问题。
+
+## Phalanx DB 编排状态数据库（v0.6.0 新增）
+
+herdr 原生没有任务编排层（Run/Task/Dispatch/DAG/worker_done），Phalanx skill 用 sqlite 外挂实现。
+
+- **DB 路径**：默认 `~/.herdr-phalanx/phalanx.db`，环境变量 `PHALANX_DB` 覆盖
+- **Schema**：`db/schema.sql`（6 表 2 view）
+- **CLI**：`python db/phalanx_db.py <command>`
+
+### 常用命令
+
+```bash
+python db/phalanx_db.py init-db
+python db/phalanx_db.py run-create --objective "..." --workspace w1
+python db/phalanx_db.py run-status --run <id>
+python db/phalanx_db.py task-add --run <id> --spec "..." --deps <task_id> --role Developer
+python db/phalanx_db.py task-ready --run <id>
+python db/phalanx_db.py dispatch-start --task <id> --agent-name dev1 --agent-kind omp --pane w1:p3
+python db/phalanx_db.py dispatch-complete --dispatch <id> --outcome succeeded --files "a.py,b.py" --summary "..."
+python db/phalanx_db.py event-log --run <id> --limit 20
+```
+
+### 事件驱动等待（替代 sleep 轮询）
+
+```bash
+herdr agent wait <name> --until idle,done,blocked --timeout <MS>
+herdr pane wait-output <pane_id> --match "## TASK_COMPLETE" --timeout <MS>
+```
+
+多 agent 并行等待用 PowerShell `Start-Job` + `Wait-Job -Any`，参考 `templates/coordinator_loop.ps1`。
