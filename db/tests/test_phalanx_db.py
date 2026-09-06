@@ -304,6 +304,101 @@ class TestDatabaseOperations(unittest.TestCase):
         conn.close()
         self.assertIn("coordinator", columns)
 
+    def test_capability_observation_persists_evidence_without_dispatch(self):
+        args = SimpleNamespace(
+            kind="omp",
+            profile="local",
+            level="discovered",
+            command="omp",
+            command_type="Application",
+            executable_path="C:/tools/omp.exe",
+            version="1.2.3",
+            herdr_version="0.8.2",
+            integration="recognized",
+            launch_args="--auto-approve",
+            evidence='{"source":"Get-Command"}',
+        )
+
+        original_out = db.out
+        result = {}
+        db.out = lambda data, table=False: result.update(data)
+        try:
+            db.cmd_capability_record(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["agent_kind"], "omp")
+        self.assertEqual(result["profile"], "local")
+        self.assertEqual(result["level"], "discovered")
+        self.assertEqual(result["evidence"], {"source": "Get-Command"})
+
+        conn = db.get_db()
+        dispatches = conn.execute("SELECT COUNT(*) FROM dispatches").fetchone()[0]
+        conn.close()
+        self.assertEqual(dispatches, 0)
+
+    def test_capability_current_returns_latest_observation_and_history_is_retained(self):
+        first = SimpleNamespace(
+            kind="omp", profile="local", level="discovered", command="omp", command_type=None,
+            executable_path=None, version=None, herdr_version="0.8.2", integration=None,
+            launch_args=None, evidence="{}",
+        )
+        latest = SimpleNamespace(
+            kind="omp", profile="local", level="ready", command="omp", command_type=None,
+            executable_path=None, version=None, herdr_version="0.8.2", integration="recognized",
+            launch_args="--auto-approve", evidence='{"startup":"ready"}',
+        )
+        original_out = db.out
+        db.out = lambda data, table=False: None
+        try:
+            db.cmd_capability_record(first)
+            db.cmd_capability_record(latest)
+        finally:
+            db.out = original_out
+
+        conn = db.get_db()
+        current = db.row_to_dict(conn.execute(
+            "SELECT * FROM current_capabilities WHERE agent_kind=? AND profile=?", ("omp", "local")
+        ).fetchone())
+        history = conn.execute(
+            "SELECT id FROM capability_observations WHERE agent_kind=? AND profile=?", ("omp", "local")
+        ).fetchall()
+        conn.close()
+
+        self.assertEqual(current["level"], "ready")
+        self.assertEqual(current["evidence"], {"startup": "ready"})
+        self.assertEqual(len(history), 2)
+
+    def test_capability_record_rejects_unknown_level(self):
+        args = SimpleNamespace(
+            kind="omp", profile=None, level="unsupported", command=None, command_type=None,
+            executable_path=None, version=None, herdr_version=None, integration=None, launch_args=None,
+            evidence="{}",
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported capability level"):
+            db.cmd_capability_record(args)
+
+    def test_capability_list_queries_current_observation_by_kind_and_profile(self):
+        args = SimpleNamespace(
+            kind="omp", profile="local", level="verified", command=None, command_type=None,
+            executable_path=None, version=None, herdr_version="0.8.2", integration=None,
+            launch_args=None, evidence='{"smoke_dispatch":"succeeded"}',
+        )
+        original_out = db.out
+        results = []
+        try:
+            db.out = lambda data, table=False: None
+            db.cmd_capability_record(args)
+            db.out = lambda data, table=False: results.extend(data)
+            db.cmd_capability_list(SimpleNamespace(kind="omp", profile="local", current=True, table=False))
+        finally:
+            db.out = original_out
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["level"], "verified")
+        self.assertEqual(results[0]["profile"], "local")
+
     def test_run_create_persists(self):
         run_id = self._create_run("test objective")
         conn = db.get_db()

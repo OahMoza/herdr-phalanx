@@ -109,6 +109,28 @@ CREATE TABLE IF NOT EXISTS gates (
 CREATE INDEX IF NOT EXISTS idx_gates_run ON gates(run_id);
 
 -- ------------------------------------------------------------
+-- CapabilityObservation: Coordinator 收集的本机 Agent 能力证据（仅观察，不派活）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS capability_observations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_kind      TEXT NOT NULL,
+  profile         TEXT,
+  level           TEXT NOT NULL CHECK(level IN ('declared', 'discovered', 'ready', 'verified', 'degraded', 'unknown')),
+  command         TEXT,
+  command_type    TEXT,
+  executable_path TEXT,
+  version         TEXT,
+  herdr_version   TEXT,
+  integration     TEXT,
+  launch_args     TEXT,
+  evidence        TEXT NOT NULL DEFAULT '{}',
+  observed_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_capabilities_kind_profile
+  ON capability_observations(agent_kind, profile, id DESC);
+
+-- ------------------------------------------------------------
 -- View: ready_tasks — 自动计算依赖已全部满足的 task
 -- 协调器循环用这个 view 决定哪些 task 可以派活
 -- ------------------------------------------------------------
@@ -152,3 +174,19 @@ SELECT
 FROM runs r
 LEFT JOIN tasks t ON t.run_id = r.id
 GROUP BY r.id;
+
+-- ------------------------------------------------------------
+-- View: current_capabilities — 每个 kind/profile 的最新观察
+-- ------------------------------------------------------------
+DROP VIEW IF EXISTS current_capabilities;
+CREATE VIEW current_capabilities AS
+SELECT c.*
+FROM capability_observations c
+WHERE c.id = (
+  SELECT latest.id
+  FROM capability_observations latest
+  WHERE latest.agent_kind = c.agent_kind
+    AND latest.profile IS c.profile
+  ORDER BY latest.id DESC
+  LIMIT 1
+);

@@ -179,6 +179,45 @@ def cmd_run_abort(args):
     out(transition_run(get_db(), args.run, args.coordinator, "aborted"))
 
 
+CAPABILITY_LEVELS = {"declared", "discovered", "ready", "verified", "degraded", "unknown"}
+
+
+def cmd_capability_record(args):
+    if args.level not in CAPABILITY_LEVELS:
+        raise ValueError(f"unsupported capability level: {args.level}")
+    evidence = json.loads(args.evidence)
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO capability_observations
+           (agent_kind, profile, level, command, command_type, executable_path, version,
+            herdr_version, integration, launch_args, evidence)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            args.kind, args.profile, args.level, args.command, args.command_type,
+            args.executable_path, args.version, args.herdr_version, args.integration,
+            args.launch_args, json.dumps(evidence, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM capability_observations WHERE id=last_insert_rowid()").fetchone()
+    out(row_to_dict(row))
+    conn.close()
+
+
+def cmd_capability_list(args):
+    conn = get_db()
+    source = "current_capabilities" if args.current else "capability_observations"
+    q = f"SELECT * FROM {source} WHERE agent_kind=?"
+    params = [args.kind]
+    if args.profile is not None:
+        q += " AND profile IS ?"
+        params.append(args.profile)
+    q += " ORDER BY id DESC"
+    rows = conn.execute(q, params).fetchall()
+    out([row_to_dict(row) for row in rows], table=args.table)
+    conn.close()
+
+
 def cmd_run_list(args):
     conn = get_db()
     rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
@@ -593,6 +632,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run", required=True)
     sp.add_argument("--coordinator", required=True)
     sp.set_defaults(func=cmd_run_abort)
+
+    sp = sub.add_parser("capability-record")
+    sp.add_argument("--kind", required=True)
+    sp.add_argument("--profile")
+    sp.add_argument("--level", required=True, choices=sorted(CAPABILITY_LEVELS))
+    sp.add_argument("--command")
+    sp.add_argument("--command-type")
+    sp.add_argument("--executable-path")
+    sp.add_argument("--version")
+    sp.add_argument("--herdr-version")
+    sp.add_argument("--integration")
+    sp.add_argument("--launch-args")
+    sp.add_argument("--evidence", default="{}")
+    sp.set_defaults(func=cmd_capability_record)
+
+    sp = sub.add_parser("capability-list")
+    sp.add_argument("--kind", required=True)
+    sp.add_argument("--profile")
+    sp.add_argument("--current", action="store_true")
+    sp.add_argument("--table", action="store_true")
+    sp.set_defaults(func=cmd_capability_list)
 
     sp = sub.add_parser("task-add")
     sp.add_argument("--run", required=True)
