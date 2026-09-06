@@ -5,10 +5,12 @@ Run: python -m unittest db.tests.test_phalanx_db -v
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 # Add parent dir to path so we can import phalanx_db
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -224,6 +226,23 @@ class TestDatabaseOperations(unittest.TestCase):
         conn.close()
         return run_id
 
+    def _create_run_with_cli(self, objective, coordinator, metadata=None):
+        args = SimpleNamespace(
+            objective=objective,
+            workspace=None,
+            coordinator=coordinator,
+            metadata=json.dumps(metadata or {}),
+        )
+
+        original_out = db.out
+        result = {}
+        db.out = lambda data, table=False: result.update(data)
+        try:
+            db.cmd_run_create(args)
+        finally:
+            db.out = original_out
+        return result["id"]
+
     def _create_task(self, run_id, spec="task", deps="[]", status="pending"):
         conn = db.get_db()
         task_id = db.gen_id("task")
@@ -253,6 +272,38 @@ class TestDatabaseOperations(unittest.TestCase):
         self.assertIn("ready_tasks", views)
         self.assertIn("run_summary", views)
 
+    def test_init_db_migrates_existing_run_table_with_coordinator(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("DROP VIEW run_summary")
+        conn.execute("DROP VIEW ready_tasks")
+        conn.execute("DROP TABLE runs")
+        conn.execute("""CREATE TABLE runs (
+            id TEXT PRIMARY KEY,
+            objective TEXT NOT NULL,
+            workspace_id TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at TEXT,
+            metadata TEXT
+        )""")
+        conn.commit()
+        conn.close()
+
+        class Args:
+            pass
+
+        original_out = db.out
+        db.out = lambda data, table=False: None
+        try:
+            db.cmd_init_db(Args())
+        finally:
+            db.out = original_out
+
+        conn = db.get_db()
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+        conn.close()
+        self.assertIn("coordinator", columns)
+
     def test_run_create_persists(self):
         run_id = self._create_run("test objective")
         conn = db.get_db()
@@ -260,6 +311,132 @@ class TestDatabaseOperations(unittest.TestCase):
         conn.close()
         self.assertEqual(row["objective"], "test objective")
         self.assertEqual(row["status"], "active")
+
+    def test_run_create_records_coordinator_and_startup_metadata(self):
+        run_id = self._create_run_with_cli(
+            "owned run", coordinator="hermes-main", metadata={"session": "local"}
+        )
+
+        conn = db.get_db()
+        run = db.row_to_dict(conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+        event = db.row_to_dict(conn.execute(
+            "SELECT * FROM events WHERE run_id=? ORDER BY id", (run_id,)
+        ).fetchone())
+        conn.close()
+
+        self.assertEqual(run["coordinator"], "hermes-main")
+        self.assertEqual(run["metadata"], {"dispatcher": "hermes-main", "session": "local"})
+        self.assertEqual(event["event_type"], "run_created")
+        self.assertEqual(event["payload"]["coordinator"], "hermes-main")
+
+    def test_run_status_preserves_owner_after_reopening_database(self):
+        run_id = self._create_run_with_cli("owned run", coordinator="hermes-main")
+        conn = db.get_db()
+        conn.close()
+
+        conn = db.get_db()
+        status = db.row_to_dict(conn.execute("SELECT * FROM run_summary WHERE id=?", (run_id,)).fetchone())
+        conn.close()
+
+        self.assertEqual(status["coordinator"], "hermes-main")
+        self.assertEqual(status["status"], "active")
+
+    def test_non_owner_cannot_change_active_run(self):
+        run_id = self._create_run_with_cli("owned run", coordinator="hermes-main")
+        conn = db.get_db()
+        try:
+            with self.assertRaisesRegex(PermissionError, "owned by hermes-main"):
+                db.assert_run_owner(conn, run_id, "other-coordinator")
+        finally:
+            conn.close()
+
+    def test_non_owner_cannot_add_task_to_active_run(self):
+        run_id = self._create_run_with_cli("owned run", coordinator="hermes-main")
+        args = SimpleNamespace(
+            run=run_id,
+            spec="unauthorized task",
+            deps="[]",
+            role=None,
+            agent=None,
+            coordinator="other-coordinator",
+        )
+
+        with self.assertRaisesRegex(PermissionError, "owned by hermes-main"):
+            db.cmd_task_add(args)
+
+        conn = db.get_db()
+        count = conn.execute("SELECT COUNT(*) FROM tasks WHERE run_id=?", (run_id,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
+
+    def test_non_owner_cannot_start_dispatch_for_active_run(self):
+        run_id = self._create_run_with_cli("owned run", coordinator="hermes-main")
+        task_id = self._create_task(run_id)
+        args = SimpleNamespace(
+            task=task_id,
+            agent_name="worker-one",
+            agent_kind="omp",
+            pane="w1:p1",
+            tab=None,
+            coordinator="other-coordinator",
+        )
+
+        with self.assertRaisesRegex(PermissionError, "owned by hermes-main"):
+            db.cmd_dispatch_start(args)
+
+        conn = db.get_db()
+        count = conn.execute("SELECT COUNT(*) FROM dispatches WHERE task_id=?", (task_id,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(count, 0)
+
+    def test_run_can_complete_or_abort_with_owner_and_events(self):
+        run_id = self._create_run_with_cli("owned run", coordinator="hermes-main")
+        aborted_run_id = self._create_run_with_cli("aborted run", coordinator="hermes-main")
+
+        completed = db.transition_run(db.get_db(), run_id, "hermes-main", "completed")
+        aborted = db.transition_run(db.get_db(), aborted_run_id, "hermes-main", "aborted")
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(aborted["status"], "aborted")
+        self.assertTrue(aborted["completed_at"])
+
+        conn = db.get_db()
+        completed_events = [row["event_type"] for row in conn.execute(
+            "SELECT event_type FROM events WHERE run_id=? ORDER BY id", (run_id,)
+        )]
+        aborted_events = [row["event_type"] for row in conn.execute(
+            "SELECT event_type FROM events WHERE run_id=? ORDER BY id", (aborted_run_id,)
+        )]
+        conn.close()
+        self.assertEqual(completed_events, ["run_created", "run_completed"])
+        self.assertEqual(aborted_events, ["run_created", "run_aborted"])
+
+    def test_owner_cannot_change_task_or_dispatch_after_run_is_terminal(self):
+        run_id = self._create_run_with_cli("owned run", coordinator="hermes-main")
+        task_id = self._create_task(run_id)
+        db.transition_run(db.get_db(), run_id, "hermes-main", "completed")
+
+        task_args = SimpleNamespace(
+            run=run_id, spec="late task", deps="[]", role=None, agent=None, coordinator="hermes-main"
+        )
+        dispatch_args = SimpleNamespace(
+            task=task_id, agent_name="worker-one", agent_kind="omp", pane="w1:p1", tab=None,
+            coordinator="hermes-main",
+        )
+
+        with self.assertRaisesRegex(ValueError, "status must be active"):
+            db.cmd_task_add(task_args)
+        with self.assertRaisesRegex(ValueError, "status must be active"):
+            db.cmd_dispatch_start(dispatch_args)
+
+    def test_run_lifecycle_commands_require_run_and_coordinator(self):
+        parser = db.build_parser()
+
+        complete = parser.parse_args(["run-complete", "--run", "run_123", "--coordinator", "hermes-main"])
+        abort = parser.parse_args(["run-abort", "--run", "run_123", "--coordinator", "hermes-main"])
+
+        self.assertIs(complete.func, db.cmd_run_complete)
+        self.assertIs(abort.func, db.cmd_run_abort)
 
     def test_task_add_with_deps(self):
         run_id = self._create_run()

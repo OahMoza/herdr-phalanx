@@ -115,6 +115,9 @@ def cmd_init_db(args):
     path.parent.mkdir(parents=True, exist_ok=True)
     schema = schema_path().read_text(encoding="utf-8")
     conn = sqlite3.connect(str(path))
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    if columns and "coordinator" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN coordinator TEXT NOT NULL DEFAULT 'hermes'")
     conn.executescript(schema)
     conn.close()
     out({"status": "ok", "db_path": str(path), "schema": str(schema_path())})
@@ -127,15 +130,53 @@ def cmd_db_path(args):
 def cmd_run_create(args):
     conn = get_db()
     run_id = gen_id("run")
+    metadata = json.loads(args.metadata or "{}")
+    metadata["dispatcher"] = args.coordinator
     conn.execute(
-        "INSERT INTO runs (id, objective, workspace_id, metadata) VALUES (?,?,?,?)",
-        (run_id, args.objective, args.workspace, json.dumps({"dispatcher": "hermes"}, ensure_ascii=False)),
+        "INSERT INTO runs (id, objective, workspace_id, coordinator, metadata) VALUES (?,?,?,?,?)",
+        (run_id, args.objective, args.workspace, args.coordinator, json.dumps(metadata, ensure_ascii=False)),
     )
-    log_event(conn, "run_created", run_id=run_id, payload={"objective": args.objective})
+    log_event(conn, "run_created", run_id=run_id,
+              payload={"objective": args.objective, "coordinator": args.coordinator})
     conn.commit()
     row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
     out(row_to_dict(row))
     conn.close()
+
+
+def assert_run_owner(
+    conn: sqlite3.Connection, run_id: str, coordinator: str, require_active: bool = False
+) -> sqlite3.Row:
+    run = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+    if not run:
+        raise ValueError(f"run not found: {run_id}")
+    if run["coordinator"] != coordinator:
+        raise PermissionError(f"run {run_id} is owned by {run['coordinator']}")
+    if require_active and run["status"] != "active":
+        raise ValueError(f"run status must be active, got: {run['status']}")
+    return run
+
+
+def transition_run(conn: sqlite3.Connection, run_id: str, coordinator: str, status: str) -> dict:
+    if status not in ("completed", "aborted"):
+        raise ValueError(f"unsupported run status: {status}")
+    run = assert_run_owner(conn, run_id, coordinator)
+    if run["status"] != "active":
+        raise ValueError(f"run status must be active, got: {run['status']}")
+    conn.execute("UPDATE runs SET status=?, completed_at=? WHERE id=?", (status, now(), run_id))
+    log_event(conn, f"run_{status}", run_id=run_id, payload={"coordinator": coordinator})
+    conn.commit()
+    result = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+    conn.close()
+    return row_to_dict(result)
+
+
+def cmd_run_complete(args):
+    out(transition_run(get_db(), args.run, args.coordinator, "completed"))
+
+
+def cmd_run_abort(args):
+    out(transition_run(get_db(), args.run, args.coordinator, "aborted"))
 
 
 def cmd_run_list(args):
@@ -252,8 +293,14 @@ def cmd_task_add(args):
     # Validate run exists
     run = conn.execute("SELECT id FROM runs WHERE id=?", (args.run,)).fetchone()
     if not run:
+        conn.close()
         out({"error": f"run not found: {args.run}"})
         sys.exit(1)
+    try:
+        assert_run_owner(conn, args.run, args.coordinator, require_active=True)
+    except Exception:
+        conn.close()
+        raise
     task_id = gen_id("task")
     deps = parse_list_arg(args.deps)
     conn.execute(
@@ -302,11 +349,18 @@ def cmd_dispatch_start(args):
     conn = get_db()
     task = conn.execute("SELECT * FROM tasks WHERE id=?", (args.task,)).fetchone()
     if not task:
+        conn.close()
         out({"error": f"task not found: {args.task}"})
         sys.exit(1)
     if task["status"] not in ("pending", "ready", "failed"):
+        conn.close()
         out({"error": f"task status must be pending/ready/failed to dispatch, got: {task['status']}"})
         sys.exit(1)
+    try:
+        assert_run_owner(conn, task["run_id"], args.coordinator, require_active=True)
+    except Exception:
+        conn.close()
+        raise
 
     disp_id = gen_id("disp")
     conn.execute(
@@ -330,8 +384,14 @@ def cmd_dispatch_complete(args):
     conn = get_db()
     disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
     if not disp:
+        conn.close()
         out({"error": f"dispatch not found: {args.dispatch}"})
         sys.exit(1)
+    try:
+        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
+    except Exception:
+        conn.close()
+        raise
 
     files = parse_list_arg(args.files)
     conn.execute(
@@ -359,8 +419,14 @@ def cmd_dispatch_fail(args):
     conn = get_db()
     disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
     if not disp:
+        conn.close()
         out({"error": f"dispatch not found: {args.dispatch}"})
         sys.exit(1)
+    try:
+        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
+    except Exception:
+        conn.close()
+        raise
     conn.execute(
         "UPDATE dispatches SET status='failed', outcome='failed', failure_reason=?, completed_at=? WHERE id=?",
         (args.reason, now(), args.dispatch),
@@ -398,8 +464,14 @@ def cmd_dispatch_complete_from_output(args):
     conn = get_db()
     disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
     if not disp:
+        conn.close()
         out({"error": f"dispatch not found: {args.dispatch}"})
         sys.exit(1)
+    try:
+        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
+    except Exception:
+        conn.close()
+        raise
 
     files_json = json.dumps(parsed["files_modified"], ensure_ascii=False)
     conn.execute(
@@ -500,6 +572,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("run-create")
     sp.add_argument("--objective", required=True)
     sp.add_argument("--workspace")
+    sp.add_argument("--coordinator", default="hermes")
+    sp.add_argument("--metadata", default="{}")
     sp.set_defaults(func=cmd_run_create)
 
     sp = sub.add_parser("run-list")
@@ -510,12 +584,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run", required=True)
     sp.set_defaults(func=cmd_run_status)
 
+    sp = sub.add_parser("run-complete")
+    sp.add_argument("--run", required=True)
+    sp.add_argument("--coordinator", required=True)
+    sp.set_defaults(func=cmd_run_complete)
+
+    sp = sub.add_parser("run-abort")
+    sp.add_argument("--run", required=True)
+    sp.add_argument("--coordinator", required=True)
+    sp.set_defaults(func=cmd_run_abort)
+
     sp = sub.add_parser("task-add")
     sp.add_argument("--run", required=True)
     sp.add_argument("--spec", required=True)
     sp.add_argument("--deps", default="[]")
     sp.add_argument("--role")
     sp.add_argument("--agent")
+    sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_task_add)
 
     sp = sub.add_parser("task-list")
@@ -539,6 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--agent-kind", required=True)
     sp.add_argument("--pane", required=True)
     sp.add_argument("--tab")
+    sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_dispatch_start)
 
     sp = sub.add_parser("dispatch-complete")
@@ -546,11 +632,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--outcome", required=True, choices=["succeeded", "failed"])
     sp.add_argument("--files", default="[]")
     sp.add_argument("--summary", default="")
+    sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_dispatch_complete)
 
     sp = sub.add_parser("dispatch-fail")
     sp.add_argument("--dispatch", required=True)
     sp.add_argument("--reason", required=True)
+    sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_dispatch_fail)
 
     sp = sub.add_parser("parse-worker-done", help="Parse TASK_COMPLETE marker from agent output (pure parsing)")
@@ -562,6 +650,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dispatch", required=True)
     sp.add_argument("--text", default="")
     sp.add_argument("--file", help="Read agent output from file instead of --text")
+    sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_dispatch_complete_from_output)
 
     sp = sub.add_parser("dispatch-list")

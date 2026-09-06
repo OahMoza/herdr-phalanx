@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id            TEXT PRIMARY KEY,                              -- 如 run_20260905_001
   objective     TEXT NOT NULL,                                 -- 本次编排的目标描述
   workspace_id  TEXT,                                          -- 关联的 herdr workspace (wN)
+  coordinator   TEXT NOT NULL DEFAULT 'hermes',                -- active Run 的唯一写入者
   status        TEXT NOT NULL DEFAULT 'active',                -- active | completed | failed | aborted
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at  TEXT,
@@ -111,7 +112,8 @@ CREATE INDEX IF NOT EXISTS idx_gates_run ON gates(run_id);
 -- View: ready_tasks — 自动计算依赖已全部满足的 task
 -- 协调器循环用这个 view 决定哪些 task 可以派活
 -- ------------------------------------------------------------
-CREATE VIEW IF NOT EXISTS ready_tasks AS
+DROP VIEW IF EXISTS ready_tasks;
+CREATE VIEW ready_tasks AS
 SELECT
   t.id,
   t.run_id,
@@ -133,10 +135,12 @@ WHERE t.status = 'pending'
 -- ------------------------------------------------------------
 -- View: run_summary — Run 的汇总统计
 -- ------------------------------------------------------------
-CREATE VIEW IF NOT EXISTS run_summary AS
+DROP VIEW IF EXISTS run_summary;
+CREATE VIEW run_summary AS
 SELECT
   r.id,
   r.objective,
+  r.coordinator,
   r.status,
   r.created_at,
   r.completed_at,
