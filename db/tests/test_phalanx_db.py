@@ -399,6 +399,112 @@ class TestDatabaseOperations(unittest.TestCase):
         self.assertEqual(results[0]["level"], "verified")
         self.assertEqual(results[0]["profile"], "local")
 
+    def test_managed_smoke_verification_records_dispatch_and_verified_capability(self):
+        run_id = self._create_run_with_cli("verify worker", coordinator="hermes-main")
+        args = SimpleNamespace(
+            run=run_id,
+            coordinator="hermes-main",
+            kind="omp",
+            profile="local",
+            agent_name="smoke-omp",
+            pane="w1:p1",
+            tab="w1:t1",
+            launch="succeeded",
+            readiness="ready",
+            output_read="succeeded",
+            output="## TASK_COMPLETE\noutcome: succeeded\nfiles_modified: []\nsummary: smoke complete",
+            evidence='{"herdr_state":"done"}',
+        )
+
+        original_out = db.out
+        result = {}
+        db.out = lambda data, table=False: result.update(data)
+        try:
+            db.cmd_smoke_verify_managed(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["capability_level"], "verified")
+        self.assertEqual(result["dispatch"]["status"], "completed")
+        self.assertEqual(result["dispatch"]["outcome"], "succeeded")
+
+        conn = db.get_db()
+        capability = db.row_to_dict(conn.execute(
+            "SELECT * FROM current_capabilities WHERE agent_kind=? AND profile=?", ("omp", "local")
+        ).fetchone())
+        event_types = [row["event_type"] for row in conn.execute(
+            "SELECT event_type FROM events WHERE run_id=? ORDER BY id", (run_id,)
+        )]
+        conn.close()
+        self.assertEqual(capability["level"], "verified")
+        self.assertEqual(capability["evidence"]["smoke"]["parser"], "succeeded")
+        self.assertEqual(event_types, ["run_created", "smoke_dispatch_verified"])
+
+        conn = db.get_db()
+        recovered = db.row_to_dict(conn.execute(
+            "SELECT * FROM current_capabilities WHERE agent_kind=? AND profile=?", ("omp", "local")
+        ).fetchone())
+        conn.close()
+        self.assertEqual(recovered["level"], "verified")
+
+    def test_managed_smoke_verification_degrades_on_missing_completion_report(self):
+        run_id = self._create_run_with_cli("verify worker", coordinator="hermes-main")
+        args = SimpleNamespace(
+            run=run_id, coordinator="hermes-main", kind="omp", profile="local",
+            agent_name="smoke-omp", pane="w1:p1", tab="w1:t1", launch="succeeded",
+            readiness="ready", output_read="succeeded", output="finished without marker", evidence="{}",
+        )
+
+        original_out = db.out
+        result = {}
+        db.out = lambda data, table=False: result.update(data)
+        try:
+            db.cmd_smoke_verify_managed(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["capability_level"], "degraded")
+        self.assertEqual(result["dispatch"]["status"], "failed")
+        self.assertEqual(result["dispatch"]["failure_reason"], "missing valid TASK_COMPLETE report")
+
+    def test_managed_smoke_verification_degrades_when_launch_fails_without_parser(self):
+        run_id = self._create_run_with_cli("verify worker", coordinator="hermes-main")
+        args = SimpleNamespace(
+            run=run_id, coordinator="hermes-main", kind="omp", profile=None,
+            agent_name="smoke-omp", pane=None, tab=None, launch="failed", readiness="not_attempted",
+            output_read="not_attempted", output="", evidence='{"launch_error":"not found"}',
+        )
+
+        original_out = db.out
+        result = {}
+        db.out = lambda data, table=False: result.update(data)
+        try:
+            db.cmd_smoke_verify_managed(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["capability_level"], "degraded")
+        self.assertEqual(result["dispatch"]["failure_reason"], "launch failed")
+        self.assertEqual(result["capability"]["evidence"]["smoke"]["parser"], "not_attempted")
+
+    def test_managed_smoke_verification_records_parser_failure_evidence(self):
+        run_id = self._create_run_with_cli("verify worker", coordinator="hermes-main")
+        args = SimpleNamespace(
+            run=run_id, coordinator="hermes-main", kind="omp", profile=None,
+            agent_name="smoke-omp", pane="w1:p1", tab="w1:t1", launch="succeeded",
+            readiness="ready", output_read="succeeded", output="unstructured output", evidence="{}",
+        )
+
+        original_out = db.out
+        result = {}
+        db.out = lambda data, table=False: result.update(data)
+        try:
+            db.cmd_smoke_verify_managed(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["capability"]["evidence"]["smoke"]["parser"], "failed")
+
     def test_run_create_persists(self):
         run_id = self._create_run("test objective")
         conn = db.get_db()

@@ -327,6 +327,102 @@ def parse_worker_done(text: str) -> dict:
     return result
 
 
+def cmd_smoke_verify_managed(args):
+    """Persist a managed smoke Dispatch from Coordinator-observed Herdr outcomes."""
+    evidence = json.loads(args.evidence)
+    parsed = parse_worker_done(args.output) if args.output_read == "succeeded" else {
+        "parsed": False, "outcome": None, "files_modified": [], "summary": ""
+    }
+    complete = (
+        args.launch == "succeeded"
+        and args.readiness == "ready"
+        and args.output_read == "succeeded"
+        and parsed["parsed"]
+        and parsed["outcome"] == "succeeded"
+    )
+    failure_reason = None
+    if not complete:
+        if args.launch != "succeeded":
+            failure_reason = "launch failed"
+        elif args.readiness != "ready":
+            failure_reason = "readiness failed"
+        elif args.output_read != "succeeded":
+            failure_reason = "output read failed"
+        elif not parsed["parsed"]:
+            failure_reason = "missing valid TASK_COMPLETE report"
+        else:
+            failure_reason = "worker reported failure"
+
+    smoke_evidence = {
+        **evidence,
+        "smoke": {
+            "launch": args.launch,
+            "readiness": args.readiness,
+            "output_read": args.output_read,
+            "parser": "succeeded" if parsed["parsed"] else (
+                "failed" if args.output_read == "succeeded" else "not_attempted"
+            ),
+            "reported_outcome": parsed["outcome"],
+        },
+    }
+    conn = get_db()
+    try:
+        assert_run_owner(conn, args.run, args.coordinator, require_active=True)
+        task_id = gen_id("task")
+        dispatch_id = gen_id("disp")
+        task_status = "completed" if complete else "failed"
+        dispatch_status = "completed" if complete else "failed"
+        files = json.dumps(parsed["files_modified"], ensure_ascii=False)
+        result = json.dumps({
+            "outcome": parsed["outcome"] if parsed["parsed"] else "failed",
+            "summary": parsed["summary"] if parsed["parsed"] else failure_reason,
+            "files_modified": parsed["files_modified"],
+        }, ensure_ascii=False)
+        conn.execute(
+            """INSERT INTO tasks (id, run_id, spec, status, result, completed_at)
+               VALUES (?,?,?,?,?,?)""",
+            (task_id, args.run, f"Managed smoke verification for {args.kind}", task_status, result, now()),
+        )
+        conn.execute(
+            """INSERT INTO dispatches
+               (id, task_id, run_id, agent_name, agent_kind, pane_id, tab_id, status, outcome,
+                files_modified, summary, failure_reason, completed_at, metadata)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                dispatch_id, task_id, args.run, args.agent_name, args.kind, args.pane, args.tab,
+                dispatch_status, parsed["outcome"] if parsed["parsed"] else "failed", files,
+                parsed["summary"] if parsed["parsed"] else None, failure_reason, now(),
+                json.dumps({"smoke": True, "profile": args.profile}, ensure_ascii=False),
+            ),
+        )
+        level = "verified" if complete else "degraded"
+        conn.execute(
+            """INSERT INTO capability_observations (agent_kind, profile, level, evidence)
+               VALUES (?,?,?,?)""",
+            (args.kind, args.profile, level, json.dumps(smoke_evidence, ensure_ascii=False)),
+        )
+        capability = conn.execute(
+            "SELECT * FROM capability_observations WHERE id=last_insert_rowid()"
+        ).fetchone()
+        log_event(
+            conn,
+            "smoke_dispatch_verified" if complete else "smoke_dispatch_degraded",
+            run_id=args.run,
+            task_id=task_id,
+            dispatch_id=dispatch_id,
+            payload={"agent_kind": args.kind, "profile": args.profile, "failure_reason": failure_reason},
+        )
+        conn.commit()
+        dispatch = conn.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()
+        out({
+            "capability_level": level,
+            "capability": row_to_dict(capability),
+            "dispatch": row_to_dict(dispatch),
+        })
+    finally:
+        conn.close()
+
+
 def cmd_task_add(args):
     conn = get_db()
     # Validate run exists
@@ -653,6 +749,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--current", action="store_true")
     sp.add_argument("--table", action="store_true")
     sp.set_defaults(func=cmd_capability_list)
+
+    sp = sub.add_parser("smoke-verify-managed")
+    sp.add_argument("--run", required=True)
+    sp.add_argument("--coordinator", required=True)
+    sp.add_argument("--kind", required=True)
+    sp.add_argument("--profile")
+    sp.add_argument("--agent-name", required=True)
+    sp.add_argument("--pane")
+    sp.add_argument("--tab")
+    sp.add_argument("--launch", required=True)
+    sp.add_argument("--readiness", required=True)
+    sp.add_argument("--output-read", required=True)
+    sp.add_argument("--output", default="")
+    sp.add_argument("--evidence", default="{}")
+    sp.set_defaults(func=cmd_smoke_verify_managed)
 
     sp = sub.add_parser("task-add")
     sp.add_argument("--run", required=True)
