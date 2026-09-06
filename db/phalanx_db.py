@@ -661,6 +661,76 @@ def cmd_dispatch_complete_from_output(args):
     conn.close()
 
 
+def cmd_dispatch_block(args):
+    evidence = json.loads(args.evidence)
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+        if not disp:
+            raise ValueError(f"dispatch not found: {args.dispatch}")
+        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
+        if disp["status"] in ("completed", "failed", "abandoned"):
+            raise ValueError(f"dispatch already terminal: {disp['status']}")
+        metadata = row_to_dict(disp).get("metadata") or {}
+        metadata.update({"block_state": args.state, "block_evidence": evidence})
+        conn.execute(
+            "UPDATE dispatches SET status='blocked', failure_reason=?, metadata=? WHERE id=?",
+            (args.reason, json.dumps(metadata, ensure_ascii=False), args.dispatch),
+        )
+        conn.execute("UPDATE tasks SET status='blocked', updated_at=? WHERE id=?", (now(), disp["task_id"]))
+        log_event(
+            conn, "dispatch_blocked", run_id=disp["run_id"], task_id=disp["task_id"], dispatch_id=args.dispatch,
+            payload={"state": args.state, "reason": args.reason, "evidence": evidence},
+        )
+        conn.commit()
+        dispatch = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (disp["task_id"],)).fetchone()
+        out({"dispatch": row_to_dict(dispatch), "task": row_to_dict(task), "evidence": evidence})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def cmd_dispatch_resolve_block(args):
+    if args.decision not in ("retry", "fail"):
+        raise ValueError(f"unsupported block decision: {args.decision}")
+    evidence = json.loads(args.evidence)
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+        if not disp:
+            raise ValueError(f"dispatch not found: {args.dispatch}")
+        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
+        if disp["status"] != "blocked":
+            raise ValueError(f"dispatch status must be blocked, got: {disp['status']}")
+        task_status = "pending" if args.decision == "retry" else "failed"
+        conn.execute(
+            "UPDATE dispatches SET status='failed', outcome='failed', completed_at=? WHERE id=?",
+            (now(), args.dispatch),
+        )
+        conn.execute(
+            "UPDATE tasks SET status=?, updated_at=?, completed_at=? WHERE id=?",
+            (task_status, now(), now() if task_status == "failed" else None, disp["task_id"]),
+        )
+        log_event(
+            conn, "blocked_dispatch_resolved", run_id=disp["run_id"], task_id=disp["task_id"],
+            dispatch_id=args.dispatch, payload={"decision": args.decision, "evidence": evidence},
+        )
+        conn.commit()
+        dispatch = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (disp["task_id"],)).fetchone()
+        out({"dispatch": row_to_dict(dispatch), "task": row_to_dict(task)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def cmd_dispatch_list(args):
     conn = get_db()
     q = "SELECT * FROM dispatches WHERE 1=1"
@@ -852,6 +922,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reason", required=True)
     sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_dispatch_fail)
+
+    sp = sub.add_parser("dispatch-block")
+    sp.add_argument("--dispatch", required=True)
+    sp.add_argument("--coordinator", required=True)
+    sp.add_argument("--state", required=True, choices=["settled", "blocked", "unknown", "timeout"])
+    sp.add_argument("--reason", required=True)
+    sp.add_argument("--evidence", default="{}")
+    sp.set_defaults(func=cmd_dispatch_block)
+
+    sp = sub.add_parser("dispatch-resolve-block")
+    sp.add_argument("--dispatch", required=True)
+    sp.add_argument("--coordinator", required=True)
+    sp.add_argument("--decision", required=True, choices=["retry", "fail"])
+    sp.add_argument("--evidence", default="{}")
+    sp.set_defaults(func=cmd_dispatch_resolve_block)
 
     sp = sub.add_parser("parse-worker-done", help="Parse TASK_COMPLETE marker from agent output (pure parsing)")
     sp.add_argument("--text", default="")

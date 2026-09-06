@@ -870,6 +870,83 @@ class TestDatabaseOperations(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already terminal"):
             db.cmd_dispatch_complete_from_output(success)
 
+    def test_uncertain_worker_outcome_blocks_task_and_dispatch_with_evidence(self):
+        run_id = self._create_run_with_cli("uncertain worker", coordinator="hermes-main")
+        task_id = self._create_task(run_id, status="dispatched")
+        conn = db.get_db()
+        dispatch_id = db.gen_id("disp")
+        conn.execute("INSERT INTO dispatches (id, task_id, run_id) VALUES (?,?,?)", (dispatch_id, task_id, run_id))
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            dispatch=dispatch_id, coordinator="hermes-main", state="done",
+            reason="missing TASK_COMPLETE report", evidence='{"output":"finished without report"}',
+        )
+        original_out = db.out
+        result = {}
+        try:
+            db.out = lambda data, table=False: result.update(data)
+            db.cmd_dispatch_block(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["dispatch"]["status"], "blocked")
+        self.assertEqual(result["task"]["status"], "blocked")
+        self.assertEqual(result["evidence"], {"output": "finished without report"})
+
+    def test_unknown_and_timeout_outcomes_remain_blocked_until_coordinator_decides(self):
+        run_id = self._create_run_with_cli("uncertain worker", coordinator="hermes-main")
+        task_id = self._create_task(run_id, status="dispatched")
+        conn = db.get_db()
+        dispatch_id = db.gen_id("disp")
+        conn.execute("INSERT INTO dispatches (id, task_id, run_id) VALUES (?,?,?)", (dispatch_id, task_id, run_id))
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            dispatch=dispatch_id, coordinator="hermes-main", state="timeout",
+            reason="timeout after output inspection", evidence='{"agent_state":"unknown","output":"still working"}',
+        )
+        original_out = db.out
+        try:
+            db.out = lambda data, table=False: None
+            db.cmd_dispatch_block(args)
+        finally:
+            db.out = original_out
+
+        conn = db.get_db()
+        dispatch = db.row_to_dict(conn.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone())
+        task = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        conn.close()
+        self.assertEqual(dispatch["status"], "blocked")
+        self.assertEqual(dispatch["failure_reason"], "timeout after output inspection")
+        self.assertEqual(dispatch["metadata"]["block_state"], "timeout")
+        self.assertEqual(task["status"], "blocked")
+
+    def test_coordinator_can_resolve_blocked_dispatch_to_pending_or_failed(self):
+        run_id = self._create_run_with_cli("uncertain worker", coordinator="hermes-main")
+        task_id = self._create_task(run_id, status="blocked")
+        conn = db.get_db()
+        dispatch_id = db.gen_id("disp")
+        conn.execute(
+            "INSERT INTO dispatches (id, task_id, run_id, status) VALUES (?,?,?,'blocked')",
+            (dispatch_id, task_id, run_id),
+        )
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            dispatch=dispatch_id, coordinator="hermes-main", decision="retry", evidence='{"decision":"retry"}',
+        )
+        original_out = db.out
+        result = {}
+        try:
+            db.out = lambda data, table=False: result.update(data)
+            db.cmd_dispatch_resolve_block(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["dispatch"]["status"], "failed")
+        self.assertEqual(result["task"]["status"], "pending")
+
     def test_run_summary_stats(self):
         run_id = self._create_run()
         self._create_task(run_id, "t1", status="completed")
