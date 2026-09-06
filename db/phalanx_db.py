@@ -449,6 +449,55 @@ def cmd_task_add(args):
     conn.close()
 
 
+def cmd_task_claim(args):
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        task = conn.execute("SELECT * FROM tasks WHERE id=?", (args.task,)).fetchone()
+        if not task:
+            raise ValueError(f"task not found: {args.task}")
+        assert_run_owner(conn, task["run_id"], args.coordinator, require_active=True)
+        if task["status"] != "pending":
+            raise ValueError(f"task status must be pending, got: {task['status']}")
+        dependency_ready = conn.execute(
+            """SELECT 1 FROM ready_tasks WHERE id=? AND run_id=?""", (args.task, task["run_id"])
+        ).fetchone()
+        if not dependency_ready:
+            raise ValueError("task is not dependency-ready")
+        capability = conn.execute(
+            """SELECT * FROM current_capabilities
+               WHERE agent_kind=? AND profile IS ? AND level='verified'""",
+            (args.kind, args.profile),
+        ).fetchone()
+        roles = row_to_dict(capability).get("evidence", {}).get("roles", []) if capability else []
+        if task["assigned_role"] not in roles:
+            raise ValueError(f"no verified Worker matches role {task['assigned_role']}")
+
+        dispatch_id = gen_id("disp")
+        conn.execute(
+            """INSERT INTO dispatches (id, task_id, run_id, agent_name, agent_kind, pane_id, tab_id)
+               VALUES (?,?,?,?,?,?,?)""",
+            (dispatch_id, args.task, task["run_id"], args.agent_name, args.kind, args.pane, args.tab),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='dispatched', retry_count=retry_count+1, updated_at=? WHERE id=?",
+            (now(), args.task),
+        )
+        log_event(
+            conn, "task_claimed", run_id=task["run_id"], task_id=args.task, dispatch_id=dispatch_id,
+            payload={"agent": args.agent_name, "kind": args.kind, "pane": args.pane, "tab": args.tab},
+        )
+        conn.commit()
+        claimed_task = conn.execute("SELECT * FROM tasks WHERE id=?", (args.task,)).fetchone()
+        dispatch = conn.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone()
+        out({"task": row_to_dict(claimed_task), "dispatch": row_to_dict(dispatch)})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def cmd_task_list(args):
     conn = get_db()
     q = "SELECT * FROM tasks WHERE 1=1"
@@ -773,6 +822,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--agent")
     sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_task_add)
+
+    sp = sub.add_parser("task-claim")
+    sp.add_argument("--task", required=True)
+    sp.add_argument("--coordinator", required=True)
+    sp.add_argument("--kind", required=True)
+    sp.add_argument("--profile")
+    sp.add_argument("--agent-name", required=True)
+    sp.add_argument("--pane", required=True)
+    sp.add_argument("--tab")
+    sp.set_defaults(func=cmd_task_claim)
 
     sp = sub.add_parser("task-list")
     sp.add_argument("--run")

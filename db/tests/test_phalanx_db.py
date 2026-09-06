@@ -505,6 +505,104 @@ class TestDatabaseOperations(unittest.TestCase):
 
         self.assertEqual(result["capability"]["evidence"]["smoke"]["parser"], "failed")
 
+    def test_claim_ready_task_creates_dispatch_for_verified_worker_matching_role(self):
+        run_id = self._create_run_with_cli("claim task", coordinator="hermes-main")
+        task_id = self._create_task(run_id, spec="implement feature")
+        conn = db.get_db()
+        conn.execute("UPDATE tasks SET assigned_role=? WHERE id=?", ("Developer", task_id))
+        conn.execute(
+            "INSERT INTO capability_observations (agent_kind, profile, level, evidence) VALUES (?,?,?,?)",
+            ("omp", "local", "verified", '{"roles":["Developer"]}'),
+        )
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            task=task_id, coordinator="hermes-main", kind="omp", profile="local",
+            agent_name="dev-one", pane="w1:p1", tab="w1:t1",
+        )
+
+        original_out = db.out
+        result = {}
+        db.out = lambda data, table=False: result.update(data)
+        try:
+            db.cmd_task_claim(args)
+        finally:
+            db.out = original_out
+
+        self.assertEqual(result["task"]["status"], "dispatched")
+        self.assertEqual(result["task"]["retry_count"], 1)
+        self.assertEqual(result["dispatch"]["agent_name"], "dev-one")
+        self.assertEqual(result["dispatch"]["agent_kind"], "omp")
+        self.assertEqual(result["dispatch"]["pane_id"], "w1:p1")
+        self.assertEqual(result["dispatch"]["tab_id"], "w1:t1")
+
+        conn = db.get_db()
+        events = [row["event_type"] for row in conn.execute(
+            "SELECT event_type FROM events WHERE run_id=? ORDER BY id", (run_id,)
+        )]
+        conn.close()
+        self.assertEqual(events, ["run_created", "task_claimed"])
+
+    def test_claim_ready_task_rejects_unverified_or_role_mismatched_worker(self):
+        run_id = self._create_run_with_cli("claim task", coordinator="hermes-main")
+        task_id = self._create_task(run_id)
+        conn = db.get_db()
+        conn.execute("UPDATE tasks SET assigned_role=? WHERE id=?", ("Developer", task_id))
+        conn.execute(
+            "INSERT INTO capability_observations (agent_kind, profile, level, evidence) VALUES (?,?,?,?)",
+            ("omp", "local", "verified", '{"roles":["Reviewer"]}'),
+        )
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            task=task_id, coordinator="hermes-main", kind="omp", profile="local",
+            agent_name="reviewer", pane="w1:p1", tab="w1:t1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "no verified Worker matches role Developer"):
+            db.cmd_task_claim(args)
+
+        conn = db.get_db()
+        task = conn.execute("SELECT status, retry_count FROM tasks WHERE id=?", (task_id,)).fetchone()
+        dispatches = conn.execute("SELECT COUNT(*) FROM dispatches WHERE task_id=?", (task_id,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["retry_count"], 0)
+        self.assertEqual(dispatches, 0)
+
+    def test_claim_ready_task_rejects_dependency_blocked_and_duplicate_claims(self):
+        run_id = self._create_run_with_cli("claim task", coordinator="hermes-main")
+        dependency = self._create_task(run_id)
+        task_id = self._create_task(run_id, deps=json.dumps([dependency]))
+        conn = db.get_db()
+        conn.execute("UPDATE tasks SET assigned_role=? WHERE id=?", ("Developer", task_id))
+        conn.execute(
+            "INSERT INTO capability_observations (agent_kind, level, evidence) VALUES (?,?,?)",
+            ("omp", "verified", '{"roles":["Developer"]}'),
+        )
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            task=task_id, coordinator="hermes-main", kind="omp", profile=None,
+            agent_name="dev-one", pane="w1:p1", tab="w1:t1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "task is not dependency-ready"):
+            db.cmd_task_claim(args)
+
+        conn = db.get_db()
+        conn.execute("UPDATE tasks SET status='completed' WHERE id=?", (dependency,))
+        conn.commit()
+        conn.close()
+        original_out = db.out
+        db.out = lambda data, table=False: None
+        try:
+            db.cmd_task_claim(args)
+        finally:
+            db.out = original_out
+        with self.assertRaisesRegex(ValueError, "task status must be pending"):
+            db.cmd_task_claim(args)
+
     def test_run_create_persists(self):
         run_id = self._create_run("test objective")
         conn = db.get_db()
