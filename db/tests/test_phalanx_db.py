@@ -788,7 +788,7 @@ class TestDatabaseOperations(unittest.TestCase):
         self.assertEqual(task["retry_count"], 1)
 
     def test_dispatch_complete_succeeded_marks_task_completed(self):
-        run_id = self._create_run()
+        run_id = self._create_run_with_cli("complete task", coordinator="hermes-main")
         t1 = self._create_task(run_id, "task1", status="dispatched")
         conn = db.get_db()
         disp_id = db.gen_id("disp")
@@ -796,13 +796,20 @@ class TestDatabaseOperations(unittest.TestCase):
             "INSERT INTO dispatches (id, task_id, run_id, status) VALUES (?,?,?,'running')",
             (disp_id, t1, run_id),
         )
-        conn.execute(
-            "UPDATE dispatches SET status='completed', outcome='succeeded', files_modified='[\"a.py\"]', summary='done', completed_at=? WHERE id=?",
-            (db.now(), disp_id),
-        )
-        conn.execute("UPDATE tasks SET status='completed', result=?, completed_at=? WHERE id=?",
-                     (json.dumps({"outcome": "succeeded"}), db.now(), t1))
         conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            dispatch=disp_id, coordinator="hermes-main", text=(
+                "## TASK_COMPLETE\noutcome: succeeded\nfiles_modified: [\"a.py\"]\nsummary: done"
+            ), file=None,
+        )
+        original_out = db.out
+        try:
+            db.out = lambda data, table=False: None
+            db.cmd_dispatch_complete_from_output(args)
+        finally:
+            db.out = original_out
+        conn = db.get_db()
         task = conn.execute("SELECT status FROM tasks WHERE id=?", (t1,)).fetchone()
         disp = conn.execute("SELECT status, outcome FROM dispatches WHERE id=?", (disp_id,)).fetchone()
         conn.close()
@@ -812,7 +819,7 @@ class TestDatabaseOperations(unittest.TestCase):
 
     def test_dispatch_fail_within_retry_limit_returns_task_to_pending(self):
         """失败但未超重试上限时，task 回到 pending 可重试。"""
-        run_id = self._create_run()
+        run_id = self._create_run_with_cli("retry task", coordinator="hermes-main")
         t1 = self._create_task(run_id, "task1", status="dispatched")
         conn = db.get_db()
         # set retry_count=1, max_retries=3
@@ -822,14 +829,46 @@ class TestDatabaseOperations(unittest.TestCase):
             "INSERT INTO dispatches (id, task_id, run_id, status) VALUES (?,?,?,'running')",
             (disp_id, t1, run_id),
         )
-        conn.execute("UPDATE dispatches SET status='failed', outcome='failed', failure_reason='error', completed_at=? WHERE id=?",
-                     (db.now(), disp_id))
-        # retry_count(1) < max_retries(3) → pending
-        conn.execute("UPDATE tasks SET status='pending' WHERE id=?", (t1,))
         conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            dispatch=disp_id, coordinator="hermes-main",
+            text="TASK_COMPLETE\noutcome: failed\nfiles_modified: []\nsummary: error", file=None,
+        )
+        original_out = db.out
+        try:
+            db.out = lambda data, table=False: None
+            db.cmd_dispatch_complete_from_output(args)
+        finally:
+            db.out = original_out
+        conn = db.get_db()
         task = conn.execute("SELECT status FROM tasks WHERE id=?", (t1,)).fetchone()
         conn.close()
         self.assertEqual(task["status"], "pending")
+
+    def test_dispatch_completion_rejects_missing_report_and_duplicate_terminal_result(self):
+        run_id = self._create_run_with_cli("complete task", coordinator="hermes-main")
+        task_id = self._create_task(run_id, status="dispatched")
+        conn = db.get_db()
+        dispatch_id = db.gen_id("disp")
+        conn.execute("INSERT INTO dispatches (id, task_id, run_id) VALUES (?,?,?)", (dispatch_id, task_id, run_id))
+        conn.commit()
+        conn.close()
+        missing = SimpleNamespace(dispatch=dispatch_id, coordinator="hermes-main", text="no report", file=None)
+        success = SimpleNamespace(
+            dispatch=dispatch_id, coordinator="hermes-main",
+            text="TASK_COMPLETE\noutcome: succeeded\nfiles_modified: []\nsummary: done", file=None,
+        )
+        with self.assertRaisesRegex(ValueError, "valid TASK_COMPLETE"):
+            db.cmd_dispatch_complete_from_output(missing)
+        original_out = db.out
+        try:
+            db.out = lambda data, table=False: None
+            db.cmd_dispatch_complete_from_output(success)
+        finally:
+            db.out = original_out
+        with self.assertRaisesRegex(ValueError, "already terminal"):
+            db.cmd_dispatch_complete_from_output(success)
 
     def test_run_summary_stats(self):
         run_id = self._create_run()

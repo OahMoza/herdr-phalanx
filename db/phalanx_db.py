@@ -565,38 +565,7 @@ def cmd_dispatch_start(args):
 
 
 def cmd_dispatch_complete(args):
-    conn = get_db()
-    disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
-    if not disp:
-        conn.close()
-        out({"error": f"dispatch not found: {args.dispatch}"})
-        sys.exit(1)
-    try:
-        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
-    except Exception:
-        conn.close()
-        raise
-
-    files = parse_list_arg(args.files)
-    conn.execute(
-        """UPDATE dispatches SET status='completed', outcome=?, files_modified=?, summary=?, completed_at=?
-           WHERE id=?""",
-        (args.outcome, files, args.summary, now(), args.dispatch),
-    )
-    task_status = "completed" if args.outcome == "succeeded" else "failed"
-    result = json.dumps({"outcome": args.outcome, "summary": args.summary,
-                          "files_modified": json.loads(files)}, ensure_ascii=False)
-    conn.execute(
-        "UPDATE tasks SET status=?, result=?, updated_at=?, completed_at=? WHERE id=?",
-        (task_status, result, now(), now() if task_status == "completed" else None, disp["task_id"]),
-    )
-    event_type = "worker_done" if args.outcome == "succeeded" else "worker_failed"
-    log_event(conn, event_type, run_id=disp["run_id"], task_id=disp["task_id"], dispatch_id=args.dispatch,
-               payload={"outcome": args.outcome, "summary": args.summary})
-    conn.commit()
-    row = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
-    out(row_to_dict(row))
-    conn.close()
+    raise ValueError("dispatch completion requires a parsed TASK_COMPLETE report")
 
 
 def cmd_dispatch_fail(args):
@@ -644,6 +613,8 @@ def cmd_dispatch_complete_from_output(args):
     if args.file:
         text = Path(args.file).read_text(encoding="utf-8")
     parsed = parse_worker_done(text)
+    if not parsed["parsed"]:
+        raise ValueError("dispatch completion requires a valid TASK_COMPLETE report")
 
     conn = get_db()
     disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
@@ -656,23 +627,34 @@ def cmd_dispatch_complete_from_output(args):
     except Exception:
         conn.close()
         raise
+    if disp["status"] in ("completed", "failed", "blocked", "abandoned"):
+        conn.close()
+        raise ValueError(f"dispatch already terminal: {disp['status']}")
 
     files_json = json.dumps(parsed["files_modified"], ensure_ascii=False)
+    dispatch_status = "completed" if parsed["outcome"] == "succeeded" else "failed"
     conn.execute(
-        """UPDATE dispatches SET status='completed', outcome=?, files_modified=?, summary=?, completed_at=?
+        """UPDATE dispatches SET status=?, outcome=?, files_modified=?, summary=?, completed_at=?
            WHERE id=?""",
-        (parsed["outcome"], files_json, parsed["summary"], now(), args.dispatch),
+        (dispatch_status, parsed["outcome"], files_json, parsed["summary"], now(), args.dispatch),
     )
-    task_status = "completed" if parsed["outcome"] == "succeeded" else "failed"
+    task = conn.execute("SELECT * FROM tasks WHERE id=?", (disp["task_id"],)).fetchone()
+    if parsed["outcome"] == "succeeded":
+        task_status = "completed"
+        completed_at = now()
+    else:
+        task_status = "pending" if task["retry_count"] < task["max_retries"] else "failed"
+        completed_at = None
     result = json.dumps({"outcome": parsed["outcome"], "summary": parsed["summary"],
                           "files_modified": parsed["files_modified"]}, ensure_ascii=False)
     conn.execute(
         "UPDATE tasks SET status=?, result=?, updated_at=?, completed_at=? WHERE id=?",
-        (task_status, result, now(), now() if task_status == "completed" else None, disp["task_id"]),
+        (task_status, result, now(), completed_at, disp["task_id"]),
     )
     event_type = "worker_done" if parsed["outcome"] == "succeeded" else "worker_failed"
     log_event(conn, event_type, run_id=disp["run_id"], task_id=disp["task_id"], dispatch_id=args.dispatch,
-               payload={"outcome": parsed["outcome"], "summary": parsed["summary"], "parsed": parsed["parsed"]})
+               payload={"outcome": parsed["outcome"], "summary": parsed["summary"], "parsed": True,
+                        "retry_eligible": task_status == "pending"})
     conn.commit()
     row = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
     out(row_to_dict(row))
