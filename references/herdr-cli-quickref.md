@@ -1,6 +1,6 @@
 # Herdr CLI Quick Reference
 
-> 本 skill 所有 herdr 命令的事实基础。最后核实：2026-09-04，herdr v0.8.2。
+> 本 skill 所有 herdr 命令的事实基础。最后核实：2026-09-06，herdr v0.8.2。已安装的 `herdr --skill` 是当前命令语法的权威来源。
 
 ## 版本与安装
 
@@ -87,7 +87,7 @@ herdr integration install <kind>   # 安装指定 agent 的 integration（lifecy
 
 ## 关键约束（实测沉淀）
 
-1. **pane run --pane <非 caller> 不可靠**：会把命令注入到当前 caller pane，hijack dispatcher。必须先 split 拿新 pane，或先 focus 把目标 pane 变 caller。
+1. **控制面选择**：对等待任务的受管 Worker 使用 `herdr agent prompt`。对显式 Pane 中的普通命令使用 `herdr pane run`；在现有非 caller Pane 上运行前，先 focus 该 Pane。
 2. **agent start 超时 30s**：名字会被回收，不是 agent_not_ready 状态，需要重新 start。
 3. **所有 pane 拓扑变更默认 --no-focus**：不抢用户焦点。
 4. **ID 来自 JSON 响应**：不靠记忆或示例。
@@ -121,8 +121,9 @@ python db/phalanx_db.py run-create --objective "..." --workspace w1
 python db/phalanx_db.py run-status --run <id>
 python db/phalanx_db.py task-add --run <id> --spec "..." --deps <task_id> --role Developer
 python db/phalanx_db.py task-ready --run <id>
-python db/phalanx_db.py dispatch-start --task <id> --agent-name dev1 --agent-kind omp --pane w1:p3
-python db/phalanx_db.py dispatch-complete --dispatch <id> --outcome succeeded --files "a.py,b.py" --summary "..."
+python db/phalanx_db.py task-claim --task <id> --coordinator <name> --kind omp --agent-name dev1 --pane w1:p3
+python db/phalanx_db.py dispatch-complete-from-output --dispatch <id> --coordinator <name> --text "<worker output>"
+python db/phalanx_db.py dispatch-block --dispatch <id> --coordinator <name> --state settled --reason "missing report" --evidence '{}'
 python db/phalanx_db.py event-log --run <id> --limit 20
 ```
 
