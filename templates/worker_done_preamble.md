@@ -11,6 +11,7 @@
 
 ```
 ## TASK_COMPLETE
+dispatch_id: <当前任务消息提供的执行记录 ID>
 outcome: succeeded
 files_modified: ["path/to/file1.ext", "path/to/file2.ext"]
 summary: 做了什么。发现了什么。还剩什么。
@@ -18,6 +19,7 @@ summary: 做了什么。发现了什么。还剩什么。
 
 **字段说明：**
 - `outcome`: `succeeded`（成功完成）或 `failed`（失败，必须在 summary 说明原因）
+- `dispatch_id`: 当前任务消息提供的执行记录 ID。必须原样回显，不能使用旧任务的 ID。
 - `files_modified`: JSON 数组，列出你修改/创建/删除的所有文件路径（相对项目根目录）。没有修改文件则写 `[]`
 - `summary`: 三句话，分别说明：①做了什么 ②发现了什么（坑/风险/意外）③还剩什么（未完成/需要后续）
 

@@ -263,10 +263,11 @@ def parse_worker_done(text: str) -> dict:
     - omp rendered (blank line between marker and fields): TASK_COMPLETE\\n\\noutcome: ...
     - Missing fields: defaults applied
 
-    Returns: {parsed: bool, outcome: str, files_modified: list, summary: str, raw_marker: str}
+    Returns: {parsed: bool, dispatch_id: str, outcome: str, files_modified: list, summary: str, raw_marker: str}
     """
     result = {
         "parsed": False,
+        "dispatch_id": "",
         "outcome": "succeeded",
         "files_modified": [],
         "summary": "",
@@ -278,8 +279,13 @@ def parse_worker_done(text: str) -> dict:
     # Find TASK_COMPLETE marker (with or without ## prefix)
     import re
     marker_pattern = re.compile(r"(?:##\s*)?TASK_COMPLETE\s*$", re.MULTILINE)
-    match = marker_pattern.search(text)
-    if not match:
+    tokens = list(re.finditer(r"(?:##\s*)?TASK_COMPLETE\b", text))
+    if not tokens:
+        return result
+    match = tokens[-1]
+    if not marker_pattern.fullmatch(match.group(0)):
+        return result
+    if not re.match(r"[ \t]*(?:\r?\n|$)", text[match.end():]):
         return result
 
     result["parsed"] = True
@@ -302,11 +308,14 @@ def parse_worker_done(text: str) -> dict:
             key, _, val = line.partition(":")
             key = key.strip().lower()
             val = val.strip()
-            if key in ("outcome", "files_modified", "summary"):
+            if key in ("dispatch_id", "outcome", "files_modified", "summary"):
                 fields[key] = val
-        # If we already have all 3 fields, stop (summary may be multi-line but we take first line)
-        if len(fields) >= 3:
+        # Stop after all completion fields; summary may be multi-line but we take its first line.
+        if len(fields) >= 4:
             break
+
+    if "dispatch_id" in fields:
+        result["dispatch_id"] = fields["dispatch_id"]
 
     if "outcome" in fields:
         result["outcome"] = fields["outcome"].lower()
@@ -630,6 +639,9 @@ def cmd_dispatch_complete_from_output(args):
     if disp["status"] in ("completed", "failed", "blocked", "abandoned"):
         conn.close()
         raise ValueError(f"dispatch already terminal: {disp['status']}")
+    if parsed["dispatch_id"] != args.dispatch:
+        conn.close()
+        raise ValueError("worker report dispatch_id does not match dispatch")
 
     files_json = json.dumps(parsed["files_modified"], ensure_ascii=False)
     dispatch_status = "completed" if parsed["outcome"] == "succeeded" else "failed"

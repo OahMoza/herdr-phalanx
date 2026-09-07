@@ -80,12 +80,14 @@ class TestParseWorkerDone(unittest.TestCase):
         text = """Some agent output here.
 
 ## TASK_COMPLETE
+dispatch_id: disp_123
 outcome: succeeded
 files_modified: ["a.py", "b.py"]
 summary: 做了A。发现了B。还剩C。
 """
         result = db.parse_worker_done(text)
         self.assertTrue(result["parsed"])
+        self.assertEqual(result["dispatch_id"], "disp_123")
         self.assertEqual(result["outcome"], "succeeded")
         self.assertEqual(result["files_modified"], ["a.py", "b.py"])
         self.assertIn("做了A", result["summary"])
@@ -190,6 +192,45 @@ Some trailing text.
         result = db.parse_worker_done(text)
         self.assertTrue(result["parsed"])
         self.assertEqual(result["outcome"], "succeeded")
+
+    def test_uses_last_completion_report_when_output_contains_multiple_turns(self):
+        text = """TASK_COMPLETE
+dispatch_id: disp_first
+outcome: succeeded
+files_modified: ["first.py"]
+summary: first task.
+
+TASK_COMPLETE
+dispatch_id: disp_second
+outcome: succeeded
+files_modified: ["second.py"]
+summary: second task.
+"""
+        result = db.parse_worker_done(text)
+
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["dispatch_id"], "disp_second")
+        self.assertEqual(result["files_modified"], ["second.py"])
+        self.assertEqual(result["summary"], "second task.")
+
+    def test_rejects_malformed_latest_completion_after_valid_older_report(self):
+        text = """TASK_COMPLETE
+outcome: succeeded
+files_modified: ["first.py"]
+summary: first task.
+
+TASK_COMPLETE, outcome: succeeded, files_modified: [], summary: malformed latest task.
+"""
+        result = db.parse_worker_done(text)
+
+        self.assertFalse(result["parsed"])
+
+    def test_accepts_latest_completion_report_with_windows_line_endings(self):
+        text = "TASK_COMPLETE\r\ndispatch_id: disp_123\r\noutcome: succeeded\r\nfiles_modified: []\r\nsummary: windows output\r\n"
+        result = db.parse_worker_done(text)
+
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["summary"], "windows output")
 
 
 # ============================================================
@@ -800,7 +841,7 @@ class TestDatabaseOperations(unittest.TestCase):
         conn.close()
         args = SimpleNamespace(
             dispatch=disp_id, coordinator="hermes-main", text=(
-                "## TASK_COMPLETE\noutcome: succeeded\nfiles_modified: [\"a.py\"]\nsummary: done"
+                f"## TASK_COMPLETE\ndispatch_id: {disp_id}\noutcome: succeeded\nfiles_modified: [\"a.py\"]\nsummary: done"
             ), file=None,
         )
         original_out = db.out
@@ -833,7 +874,7 @@ class TestDatabaseOperations(unittest.TestCase):
         conn.close()
         args = SimpleNamespace(
             dispatch=disp_id, coordinator="hermes-main",
-            text="TASK_COMPLETE\noutcome: failed\nfiles_modified: []\nsummary: error", file=None,
+            text=f"TASK_COMPLETE\ndispatch_id: {disp_id}\noutcome: failed\nfiles_modified: []\nsummary: error", file=None,
         )
         original_out = db.out
         try:
@@ -857,7 +898,7 @@ class TestDatabaseOperations(unittest.TestCase):
         missing = SimpleNamespace(dispatch=dispatch_id, coordinator="hermes-main", text="no report", file=None)
         success = SimpleNamespace(
             dispatch=dispatch_id, coordinator="hermes-main",
-            text="TASK_COMPLETE\noutcome: succeeded\nfiles_modified: []\nsummary: done", file=None,
+            text=f"TASK_COMPLETE\ndispatch_id: {dispatch_id}\noutcome: succeeded\nfiles_modified: []\nsummary: done", file=None,
         )
         with self.assertRaisesRegex(ValueError, "valid TASK_COMPLETE"):
             db.cmd_dispatch_complete_from_output(missing)
@@ -869,6 +910,23 @@ class TestDatabaseOperations(unittest.TestCase):
             db.out = original_out
         with self.assertRaisesRegex(ValueError, "already terminal"):
             db.cmd_dispatch_complete_from_output(success)
+
+    def test_dispatch_completion_rejects_report_from_another_dispatch(self):
+        run_id = self._create_run_with_cli("complete task", coordinator="hermes-main")
+        task_id = self._create_task(run_id, status="dispatched")
+        conn = db.get_db()
+        dispatch_id = db.gen_id("disp")
+        conn.execute("INSERT INTO dispatches (id, task_id, run_id) VALUES (?,?,?)", (dispatch_id, task_id, run_id))
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(
+            dispatch=dispatch_id, coordinator="hermes-main",
+            text="TASK_COMPLETE\ndispatch_id: disp_old\noutcome: succeeded\nfiles_modified: []\nsummary: old report",
+            file=None,
+        )
+
+        with self.assertRaisesRegex(ValueError, "dispatch_id does not match"):
+            db.cmd_dispatch_complete_from_output(args)
 
     def test_uncertain_worker_outcome_blocks_task_and_dispatch_with_evidence(self):
         run_id = self._create_run_with_cli("uncertain worker", coordinator="hermes-main")

@@ -49,7 +49,7 @@ while ($true) {
         if ($Profile) { $claimArgs += @("--profile", $Profile) }
         $claim = Invoke-Phalanx $claimArgs
 
-        $prompt = "$preamble`n`n## Task`n$($task.spec)"
+        $prompt = "$preamble`n`n## Dispatch ID`n$($claim.dispatch.id)`n`n## Task`n$($task.spec)"
         herdr agent prompt $AgentName $prompt
         if ($LASTEXITCODE -ne 0) {
             Block-Dispatch $claim.dispatch.id "blocked" "agent prompt failed" ""

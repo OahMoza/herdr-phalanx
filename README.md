@@ -227,12 +227,15 @@ python db/phalanx_db.py dispatch-resolve-block `
 
 ```text
 ## TASK_COMPLETE
+dispatch_id: <执行记录 ID>
 outcome: succeeded
 files_modified: ["src/login.py", "tests/test_login.py"]
 summary: 完成了登录修复。发现了旧会话过期逻辑。没有剩余工作。
 ```
 
 `outcome` 只能是 `succeeded` 或 `failed`。
+
+`dispatch_id` 必须原样回显任务协调器消息中的执行记录 ID。这样同一个 Worker 的旧终端报告不能完成新的执行记录。
 
 OMP 可能省略 `##`，或者输出不带引号的文件列表。Phalanx 解析器支持这些格式。
 
