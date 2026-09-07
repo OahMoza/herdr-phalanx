@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   parent_task_id   TEXT,                                       -- 父 task（扇出-扇入时用）
   assigned_role    TEXT,                                       -- 期望角色: Developer/QA/Architect/...
   preferred_agent  TEXT,                                       -- 期望 agent kind: omp/claudecode/hermes-coding/...
+  execution_mode   TEXT NOT NULL DEFAULT 'managed' CHECK(execution_mode IN ('managed', 'raw-pane')),
   result           TEXT,                                       -- JSON: {outcome, summary, files_modified}
   retry_count      INTEGER NOT NULL DEFAULT 0,
   max_retries      INTEGER NOT NULL DEFAULT 3,
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS capability_observations (
   level           TEXT NOT NULL CHECK(level IN ('declared', 'discovered', 'ready', 'verified', 'degraded', 'unknown')),
   command         TEXT,
   command_type    TEXT,
+  execution_mode  TEXT NOT NULL DEFAULT 'managed' CHECK(execution_mode IN ('managed', 'raw-pane')),
   executable_path TEXT,
   version         TEXT,
   herdr_version   TEXT,

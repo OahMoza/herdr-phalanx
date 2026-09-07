@@ -30,8 +30,10 @@ summary: 做了什么。发现了什么。还剩什么。
 4. summary 不超过 3 句话
 5. 如果你需要提问而不是完成任务，输出 `## TASK_ASK` 标记：
    ```
-   ## TASK_ASK
-   question: 你的问题
-   options: ["选项A", "选项B"] （可选，没有选项就省略）
-   ```
+    ## TASK_ASK
+    dispatch_id: <当前任务消息提供的执行记录 ID>
+    question: 你的问题
+    options: ["选项A", "选项B"] （可选，没有选项就省略）
+    ```
+   `dispatch_id` 和 `question` 必须存在。等待任务协调器以新消息回复后再继续。
 6. 不要在 TASK_COMPLETE 之后再输出其他内容

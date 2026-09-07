@@ -118,6 +118,12 @@ def cmd_init_db(args):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
     if columns and "coordinator" not in columns:
         conn.execute("ALTER TABLE runs ADD COLUMN coordinator TEXT NOT NULL DEFAULT 'hermes'")
+    task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if task_columns and "execution_mode" not in task_columns:
+        conn.execute("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'managed'")
+    capability_columns = {row[1] for row in conn.execute("PRAGMA table_info(capability_observations)")}
+    if capability_columns and "execution_mode" not in capability_columns:
+        conn.execute("ALTER TABLE capability_observations ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'managed'")
     conn.executescript(schema)
     conn.close()
     out({"status": "ok", "db_path": str(path), "schema": str(schema_path())})
@@ -189,11 +195,12 @@ def cmd_capability_record(args):
     conn = get_db()
     conn.execute(
         """INSERT INTO capability_observations
-           (agent_kind, profile, level, command, command_type, executable_path, version,
+            (agent_kind, profile, level, command, command_type, execution_mode, executable_path, version,
             herdr_version, integration, launch_args, evidence)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             args.kind, args.profile, args.level, args.command, args.command_type,
+            getattr(args, "execution_mode", "managed"),
             args.executable_path, args.version, args.herdr_version, args.integration,
             args.launch_args, json.dumps(evidence, ensure_ascii=False),
         ),
@@ -340,6 +347,39 @@ def parse_worker_done(text: str) -> dict:
     return result
 
 
+def parse_worker_ask(text: str) -> dict:
+    """Parse the latest TASK_ASK marker from Worker output."""
+    result = {"parsed": False, "dispatch_id": "", "question": "", "options": []}
+    if not text:
+        return result
+    import re
+    tokens = list(re.finditer(r"(?:##\s*)?TASK_ASK\b", text))
+    if not tokens:
+        return result
+    match = tokens[-1]
+    if not re.match(r"[ \t]*(?:\r?\n|$)", text[match.end():]):
+        return result
+    fields = {}
+    for line in text[match.end():].splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if ":" in line:
+            key, _, value = line.partition(":")
+            if key.strip().lower() in ("dispatch_id", "question", "options"):
+                fields[key.strip().lower()] = value.strip()
+        if len(fields) == 3:
+            break
+    if not fields.get("dispatch_id") or not fields.get("question"):
+        return result
+    result["parsed"] = True
+    result["dispatch_id"] = fields["dispatch_id"]
+    result["question"] = fields["question"]
+    if "options" in fields:
+        result["options"] = json.loads(parse_list_arg(fields["options"]))
+    return result
+
+
 def cmd_smoke_verify_managed(args):
     """Persist a managed smoke Dispatch from Coordinator-observed Herdr outcomes."""
     evidence = json.loads(args.evidence)
@@ -452,8 +492,8 @@ def cmd_task_add(args):
     task_id = gen_id("task")
     deps = parse_list_arg(args.deps)
     conn.execute(
-        "INSERT INTO tasks (id, run_id, spec, deps, assigned_role, preferred_agent) VALUES (?,?,?,?,?,?)",
-        (task_id, args.run, args.spec, deps, args.role, args.agent),
+        "INSERT INTO tasks (id, run_id, spec, deps, assigned_role, preferred_agent, execution_mode) VALUES (?,?,?,?,?,?,?)",
+        (task_id, args.run, args.spec, deps, args.role, args.agent, getattr(args, "execution_mode", "managed")),
     )
     log_event(conn, "task_created", run_id=args.run, task_id=task_id, payload={"spec": args.spec[:100]})
     conn.commit()
@@ -479,8 +519,8 @@ def cmd_task_claim(args):
             raise ValueError("task is not dependency-ready")
         capability = conn.execute(
             """SELECT * FROM current_capabilities
-               WHERE agent_kind=? AND profile IS ? AND level='verified'""",
-            (args.kind, args.profile),
+               WHERE agent_kind=? AND profile IS ? AND level='verified' AND execution_mode=?""",
+            (args.kind, args.profile, task["execution_mode"]),
         ).fetchone()
         roles = row_to_dict(capability).get("evidence", {}).get("roles", []) if capability else []
         if task["assigned_role"] not in roles:
@@ -618,6 +658,67 @@ def cmd_parse_worker_done(args):
         text = Path(args.file).read_text(encoding="utf-8")
     result = parse_worker_done(text)
     out(result)
+
+
+def cmd_dispatch_ask_from_output(args):
+    """Persist a matching TASK_ASK and leave the Dispatch blocked for a Coordinator reply."""
+    text = Path(args.file).read_text(encoding="utf-8") if args.file else args.text
+    parsed = parse_worker_ask(text)
+    if not parsed["parsed"]:
+        raise ValueError("dispatch question requires a valid TASK_ASK report")
+    if parsed["dispatch_id"] != args.dispatch:
+        raise ValueError("worker question dispatch_id does not match dispatch")
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+        if not disp:
+            raise ValueError(f"dispatch not found: {args.dispatch}")
+        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
+        if disp["status"] != "running":
+            raise ValueError(f"dispatch status must be running, got: {disp['status']}")
+        metadata = row_to_dict(disp).get("metadata") or {}
+        metadata["worker_ask"] = parsed
+        conn.execute("UPDATE dispatches SET status='blocked', failure_reason='worker question', metadata=? WHERE id=?",
+                     (json.dumps(metadata, ensure_ascii=False), args.dispatch))
+        conn.execute("UPDATE tasks SET status='blocked', updated_at=? WHERE id=?", (now(), disp["task_id"]))
+        log_event(conn, "worker_asked", run_id=disp["run_id"], task_id=disp["task_id"], dispatch_id=args.dispatch,
+                  payload=parsed)
+        conn.commit()
+        out({"dispatch": row_to_dict(conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()),
+             "question": parsed})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def cmd_dispatch_answer(args):
+    """Record a Coordinator response and resume the blocked Dispatch for a follow-up prompt."""
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        disp = conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()
+        if not disp:
+            raise ValueError(f"dispatch not found: {args.dispatch}")
+        assert_run_owner(conn, disp["run_id"], args.coordinator, require_active=True)
+        metadata = row_to_dict(disp).get("metadata") or {}
+        if disp["status"] != "blocked" or "worker_ask" not in metadata:
+            raise ValueError("dispatch is not blocked on a worker question")
+        metadata["coordinator_answer"] = args.answer
+        conn.execute("UPDATE dispatches SET status='running', failure_reason=NULL, metadata=? WHERE id=?",
+                     (json.dumps(metadata, ensure_ascii=False), args.dispatch))
+        conn.execute("UPDATE tasks SET status='dispatched', updated_at=? WHERE id=?", (now(), disp["task_id"]))
+        log_event(conn, "worker_question_answered", run_id=disp["run_id"], task_id=disp["task_id"],
+                  dispatch_id=args.dispatch, payload={"answer": args.answer})
+        conn.commit()
+        out(row_to_dict(conn.execute("SELECT * FROM dispatches WHERE id=?", (args.dispatch,)).fetchone()))
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def cmd_dispatch_complete_from_output(args):
@@ -852,6 +953,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--level", required=True, choices=sorted(CAPABILITY_LEVELS))
     sp.add_argument("--command")
     sp.add_argument("--command-type")
+    sp.add_argument("--execution-mode", choices=["managed", "raw-pane"], default="managed")
     sp.add_argument("--executable-path")
     sp.add_argument("--version")
     sp.add_argument("--herdr-version")
@@ -888,6 +990,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--deps", default="[]")
     sp.add_argument("--role")
     sp.add_argument("--agent")
+    sp.add_argument("--execution-mode", choices=["managed", "raw-pane"], default="managed")
     sp.add_argument("--coordinator", default="hermes")
     sp.set_defaults(func=cmd_task_add)
 
@@ -958,6 +1061,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--text", default="")
     sp.add_argument("--file", help="Read agent output from file instead of --text")
     sp.set_defaults(func=cmd_parse_worker_done)
+
+    sp = sub.add_parser("dispatch-ask-from-output", help="Parse TASK_ASK from output and block dispatch for a Coordinator reply")
+    sp.add_argument("--dispatch", required=True)
+    sp.add_argument("--text", default="")
+    sp.add_argument("--file")
+    sp.add_argument("--coordinator", default="hermes")
+    sp.set_defaults(func=cmd_dispatch_ask_from_output)
+
+    sp = sub.add_parser("dispatch-answer", help="Record a Coordinator answer and resume a Worker question")
+    sp.add_argument("--dispatch", required=True)
+    sp.add_argument("--answer", required=True)
+    sp.add_argument("--coordinator", default="hermes")
+    sp.set_defaults(func=cmd_dispatch_answer)
 
     sp = sub.add_parser("dispatch-complete-from-output", help="Parse TASK_COMPLETE from output and complete dispatch")
     sp.add_argument("--dispatch", required=True)

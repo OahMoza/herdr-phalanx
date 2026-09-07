@@ -245,6 +245,18 @@ TASK_COMPLETE, outcome: succeeded, files_modified: [], summary: malformed latest
         self.assertTrue(result["parsed"])
         self.assertEqual(result["summary"], "windows output")
 
+    def test_parses_worker_question_with_dispatch_id(self):
+        text = """TASK_ASK
+dispatch_id: disp_ask
+question: Which migration strategy should I use?
+options: ["preserve", "reset"]
+"""
+        result = db.parse_worker_ask(text)
+
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["dispatch_id"], "disp_ask")
+        self.assertEqual(result["options"], ["preserve", "reset"])
+
 
 # ============================================================
 # TestDatabaseOperations — sqlite 数据库操作（每个测试用独立临时库）
@@ -624,6 +636,23 @@ class TestDatabaseOperations(unittest.TestCase):
         self.assertEqual(task["retry_count"], 0)
         self.assertEqual(dispatches, 0)
 
+    def test_raw_pane_capability_cannot_claim_managed_task(self):
+        run_id = self._create_run_with_cli("claim task", coordinator="hermes-main")
+        task_id = self._create_task(run_id)
+        conn = db.get_db()
+        conn.execute("UPDATE tasks SET assigned_role=? WHERE id=?", ("Developer", task_id))
+        conn.execute(
+            "INSERT INTO capability_observations (agent_kind, level, execution_mode, evidence) VALUES (?,?,?,?)",
+            ("pi", "verified", "raw-pane", '{"roles":["Developer"]}'),
+        )
+        conn.commit()
+        conn.close()
+        args = SimpleNamespace(task=task_id, coordinator="hermes-main", kind="pi", profile=None,
+                               agent_name="pi-one", pane="w1:p1", tab="w1:t1")
+
+        with self.assertRaisesRegex(ValueError, "no verified Worker matches role Developer"):
+            db.cmd_task_claim(args)
+
     def test_claim_ready_task_rejects_dependency_blocked_and_duplicate_claims(self):
         run_id = self._create_run_with_cli("claim task", coordinator="hermes-main")
         dependency = self._create_task(run_id)
@@ -940,6 +969,42 @@ class TestDatabaseOperations(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "dispatch_id does not match"):
             db.cmd_dispatch_complete_from_output(args)
+
+    def test_worker_question_blocks_and_coordinator_answer_resumes_dispatch(self):
+        run_id = self._create_run_with_cli("worker question", coordinator="hermes-main")
+        task_id = self._create_task(run_id, status="dispatched")
+        conn = db.get_db()
+        dispatch_id = db.gen_id("disp")
+        conn.execute("INSERT INTO dispatches (id, task_id, run_id, status) VALUES (?,?,?,'running')",
+                     (dispatch_id, task_id, run_id))
+        conn.commit()
+        conn.close()
+        ask = SimpleNamespace(
+            dispatch=dispatch_id, coordinator="hermes-main", file=None,
+            text=f"TASK_ASK\ndispatch_id: {dispatch_id}\nquestion: Continue?\noptions: [yes, no]",
+        )
+        answer = SimpleNamespace(dispatch=dispatch_id, coordinator="hermes-main", answer="yes")
+        original_out = db.out
+        result = {}
+        try:
+            db.out = lambda data, table=False: result.update(data)
+            db.cmd_dispatch_ask_from_output(ask)
+            self.assertEqual(result["dispatch"]["status"], "blocked")
+            self.assertEqual(result["question"]["options"], ["yes", "no"])
+            db.cmd_dispatch_answer(answer)
+        finally:
+            db.out = original_out
+        conn = db.get_db()
+        dispatch = db.row_to_dict(conn.execute("SELECT * FROM dispatches WHERE id=?", (dispatch_id,)).fetchone())
+        task = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        events = [row["event_type"] for row in conn.execute(
+            "SELECT event_type FROM events WHERE run_id=? ORDER BY id", (run_id,)
+        )]
+        conn.close()
+        self.assertEqual(dispatch["status"], "running")
+        self.assertEqual(dispatch["metadata"]["coordinator_answer"], "yes")
+        self.assertEqual(task["status"], "dispatched")
+        self.assertEqual(events[-2:], ["worker_asked", "worker_question_answered"])
 
     def test_uncertain_worker_outcome_blocks_task_and_dispatch_with_evidence(self):
         run_id = self._create_run_with_cli("uncertain worker", coordinator="hermes-main")

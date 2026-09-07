@@ -50,21 +50,23 @@ while ($true) {
         $claim = Invoke-Phalanx $claimArgs
 
         $prompt = "$preamble`n`n## Dispatch ID`n$($claim.dispatch.id)`n`n## Task`n$($task.spec)"
-        herdr agent prompt $AgentName $prompt
-        if ($LASTEXITCODE -ne 0) {
+        $waitOutput = herdr agent prompt $AgentName $prompt --wait --until idle --until done --until blocked --until unknown --timeout $WaitTimeoutMs 2>&1 | Out-String
+        $timedOut = $LASTEXITCODE -ne 0
+        if ($timedOut) {
+            $output = herdr agent read $AgentName 2>&1 | Out-String
+            Block-Dispatch $claim.dispatch.id "timeout" "timeout after output inspection" $output
+            continue
+        }
+        if (-not $waitOutput) {
             Block-Dispatch $claim.dispatch.id "blocked" "agent prompt failed" ""
             continue
         }
 
-        $waitOutput = herdr agent wait $AgentName --until idle,done,blocked,unknown --timeout $WaitTimeoutMs 2>&1 | Out-String
-        $timedOut = $LASTEXITCODE -ne 0
         $output = herdr agent read $AgentName 2>&1 | Out-String
-        $agent = herdr agent get $AgentName 2>&1 | ConvertFrom-Json
-        $state = $agent.status
+        $agent = (herdr agent get $AgentName 2>&1 | ConvertFrom-Json).result.agent
+        $state = $agent.agent_status
 
-        if ($timedOut) {
-            Block-Dispatch $claim.dispatch.id "timeout" "timeout after output inspection" $output
-        } elseif ($state -eq "blocked") {
+        if ($state -eq "blocked") {
             Block-Dispatch $claim.dispatch.id "blocked" "Herdr reported blocked" $output
         } elseif ($state -eq "unknown") {
             Block-Dispatch $claim.dispatch.id "unknown" "Herdr reported unknown" $output
@@ -73,7 +75,13 @@ while ($true) {
                 Invoke-Phalanx @("dispatch-complete-from-output", "--dispatch", $claim.dispatch.id,
                     "--coordinator", $Coordinator, "--text", $output) | Out-Null
             } catch {
-                Block-Dispatch $claim.dispatch.id "settled" "missing valid TASK_COMPLETE report" $output
+                try {
+                    Invoke-Phalanx @("dispatch-ask-from-output", "--dispatch", $claim.dispatch.id,
+                        "--coordinator", $Coordinator, "--text", $output) | Out-Null
+                    return
+                } catch {
+                    Block-Dispatch $claim.dispatch.id "settled" "missing valid TASK_COMPLETE report" $output
+                }
             }
         }
     }

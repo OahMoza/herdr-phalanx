@@ -19,7 +19,7 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 - 一个 Herdr 会话。
 - 每个正在运行的任务运行只有一个任务协调器。
 - 受管执行智能体使用 Herdr 的 Agent 控制面。
-- 明确的无状态命令可以使用 Pane 控制面。
+- 明确的无状态命令使用 `raw-pane` 模式和 Pane 控制面。
 
 不支持多机器写入、网络共享 SQLite、多个任务协调器同时写同一个任务运行。
 
@@ -34,7 +34,7 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 | 智能体 | Agent | Herdr Pane 中运行的进程。 |
 | 执行智能体 | Worker | 正在执行某条执行记录的智能体。它不是永久员工记录。 |
 | 职责 | Role | 工作项要求的责任，例如 `Developer`、`QA`、`Reviewer`。 |
-| 能力证据 | Capability observation | 本机对 Agent 可用性的记录。它不是固定员工名单。 |
+| 能力证据 | Capability observation | 本机对 Agent 可用性的记录，含 `managed` 或 `raw-pane` 执行模式。 |
 | 事件 | Event | 追加式审计记录，用于恢复和排查。 |
 
 ## 用户故事
@@ -68,7 +68,7 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 1. 任务协调器创建任务运行
 2. 记录或查询本机智能体能力证据
 3. 在隔离 Pane 中完成冒烟执行，获得已验证执行智能体
-4. 创建带职责和依赖的工作项
+4. 创建带职责、依赖和执行模式（`managed` 或 `raw-pane`）的工作项
 5. 为依赖已满足的工作项原子领取一个已验证执行智能体
 6. 向等待任务的受管执行智能体发送工作
 7. 等待 Herdr 状态变化并读取输出
@@ -148,7 +148,8 @@ $design = python db/phalanx_db.py task-add `
   --run $run.id `
   --coordinator hermes-main `
   --spec "确定登录接口的修改范围" `
-  --role Developer | ConvertFrom-Json
+  --role Developer `
+  --execution-mode managed | ConvertFrom-Json
 
 $tests = python db/phalanx_db.py task-add `
   --run $run.id `
@@ -238,6 +239,22 @@ summary: 完成了登录修复。发现了旧会话过期逻辑。没有剩余�
 `dispatch_id` 必须原样回显任务协调器消息中的执行记录 ID。这样同一个 Worker 的旧终端报告不能完成新的执行记录。
 
 OMP 可能省略 `##`，或者输出不带引号的文件列表。Phalanx 解析器支持这些格式。
+
+Worker 需要 Coordinator 决策时，输出：
+
+```text
+## TASK_ASK
+dispatch_id: <执行记录 ID>
+question: 需要选择哪种迁移策略？
+options: ["保留旧数据", "重建数据库"]
+```
+
+协调器用 `dispatch-ask-from-output` 持久化问题，随后用 `dispatch-answer --answer "..."` 恢复同一 Dispatch，再把答案作为下一条 `agent prompt` 发送给 Worker。
+
+## 执行模式
+
+- `managed`：默认模式。要求 `herdr agent start`、`agent prompt`、`agent read` 和有效完成报告；只可由 `managed` verified capability 领取。
+- `raw-pane`：只用于明确的无状态 Pane 命令，例如 `pi -p`。它不能领取 managed Task，也不能使用 `coordinator_loop.ps1`。
 
 ## 能力状态
 
