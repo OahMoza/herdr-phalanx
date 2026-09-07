@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This note defines evidence that a local Windows Phalanx coordinator can collect before it assigns work to an Agent. It distinguishes Herdr support, local machine discovery, managed-agent readiness, and verified worker completion.
+This note defines evidence that a local Windows Phalanx coordinator can collect before it assigns work to an Agent. It distinguishes Herdr support, local discovery, `managed` readiness, `raw-pane` capability, and verified Worker completion.
 
 ## Evidence Pipeline
 
@@ -10,7 +10,8 @@ This note defines evidence that a local Windows Phalanx coordinator can collect 
 2. Discover the Windows command that will run with `Get-Command -All <command>`. Record command type, resolved path, and version or help output. A script or shim can behave differently from a native executable.
 3. Discover Herdr integration state with `herdr integration status` and diagnose recognition with `herdr agent explain --json` when needed.
 4. Discover profile-based Agents from their native CLI, for example `hermes profile list`.
-5. Verify managed capability in an isolated pane: `agent start`, wait for readiness, send a minimal prompt, wait for a settled Herdr state, read output, and parse a valid `TASK_COMPLETE` report.
+5. Verify `managed` capability in an isolated pane: `agent start`, wait for readiness, send a minimal prompt, wait for a settled Herdr state, read output, and parse a valid `TASK_COMPLETE` report.
+6. Verify `raw-pane` capability separately with its explicit command and output marker. It is not evidence for managed dispatches.
 
 A successful `agent start` proves only interactive readiness. It does not prove that a Worker can accept a Task, recover output, or complete a Dispatch. Herdr `unknown` is classification uncertainty, not completion. Herdr `blocked` requires explicit coordinator or user handling.
 
@@ -28,6 +29,7 @@ A successful `agent start` proves only interactive readiness. It does not prove 
 ## Facts To Persist Per Observation
 
 - Agent kind and optional profile.
+- Execution mode: `managed` or `raw-pane`.
 - Resolved executable path, command type, version, and help signature.
 - Herdr version and integration or detection evidence.
 - Discovery and verification timestamps.
@@ -39,9 +41,9 @@ The record is a machine observation. A cached successful verification is advisor
 
 ## Control Surface Boundary
 
-- Use managed-agent capability only after a Worker passes the managed smoke path.
-- If an Agent cannot pass Herdr lifecycle detection, it can still be used for explicitly stateless work through the raw-pane path: `pane run` and `pane wait-output`.
-- Do not report raw-pane capability as managed-agent capability.
+- A managed Task can claim only a verified `managed` capability with the required Role.
+- A `raw-pane` capability is for explicit stateless work through `pane run` and `pane wait-output`; it cannot claim a managed Task or use `coordinator_loop.ps1`.
+- Pi's current supported path is `raw-pane` with `pi -p`, not `herdr agent start --kind pi`.
 
 ## Permission Evidence
 

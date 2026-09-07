@@ -454,7 +454,7 @@ Run（一次编排会话）
 - SQLite 的 `capability_observations` 是**本机能力证据**。它保存命令、版本、profile、Herdr 集成、启动参数、时间和结果。
 - 只有完整的受管冒烟执行可以把本机能力标为 `verified`。发现命令或 profile 只能标为 `discovered`。
 - `wiki/` 是**历史证据**，只追加。历史失败不能自动变成当前机器的全局规则；当前决策优先使用当前 capability observation 和已安装的 `herdr --skill`。
-- 不能通过受管生命周期验证的 Agent，只能用于明确的无状态 Pane 命令。不得把 raw Pane 能力记作受管 Worker 能力。
+- 不能通过受管生命周期验证的 Agent，只能用于 `raw-pane` 无状态命令。`managed` Task 只能领取同模式的 verified capability。
 
 ### phalanx_db.py 常用命令
 
@@ -468,8 +468,8 @@ python db/phalanx_db.py run-status --run <run_id>
 python db/phalanx_db.py run-list
 
 # Task 管理（--deps 支持 JSON 数组或逗号分隔）
-python db/phalanx_db.py task-add --run <run_id> --coordinator hermes-main --spec "设计API" --role Architect --agent claudecode
-python db/phalanx_db.py task-add --run <run_id> --coordinator hermes-main --spec "实现登录" --deps <task1_id> --role Developer --agent omp
+python db/phalanx_db.py task-add --run <run_id> --coordinator hermes-main --spec "设计API" --role Architect --agent claudecode --execution-mode managed
+python db/phalanx_db.py task-add --run <run_id> --coordinator hermes-main --spec "实现登录" --deps <task1_id> --role Developer --agent omp --execution-mode managed
 python db/phalanx_db.py task-ready --run <run_id>    # 查可派活的 task（依赖已满足）
 python db/phalanx_db.py task-list --run <run_id> --status pending
 
@@ -482,6 +482,8 @@ python db/phalanx_db.py task-claim --task <task_id> --coordinator hermes-main --
 python db/phalanx_db.py parse-worker-done --text "$(herdr agent read <name> --lines 100)"   # 纯解析，输出 JSON
 python db/phalanx_db.py parse-worker-done --file /tmp/agent-out.md                              # 从文件读取解析
 python db/phalanx_db.py dispatch-complete-from-output --dispatch <disp_id> --coordinator hermes-main --text "$(herdr agent read <name> --lines 100)"  # 解析+写库一步完成
+python db/phalanx_db.py dispatch-ask-from-output --dispatch <disp_id> --coordinator hermes-main --text "$(herdr agent read <name> --lines 100)"
+python db/phalanx_db.py dispatch-answer --dispatch <disp_id> --coordinator hermes-main --answer "继续使用保留旧数据的策略"
 python db/phalanx_db.py dispatch-block --dispatch <disp_id> --coordinator hermes-main --state settled --reason "missing report" --evidence '{}'
 python db/phalanx_db.py dispatch-resolve-block --dispatch <disp_id> --coordinator hermes-main --decision retry --evidence '{}'
 
@@ -504,6 +506,7 @@ python db/phalanx_db.py event-log --run <run_id> --limit 20
 
 ```
 ## TASK_COMPLETE
+dispatch_id: <当前 Dispatch ID>
 outcome: succeeded|failed
 files_modified: ["path/a", "path/b"]
 summary: 做了什么。发现了什么。还剩什么。
@@ -512,11 +515,12 @@ summary: 做了什么。发现了什么。还剩什么。
 需要提问时输出：
 ```
 ## TASK_ASK
+dispatch_id: <当前 Dispatch ID>
 question: 你的问题
 options: ["选项A", "选项B"]
 ```
 
-**协调器捕获方式**：使用 `herdr agent wait` 或 `herdr pane wait-output` 阻塞等待，再用 `herdr agent read` 读取输出。协调器脚本不解析报告；它把完整输出交给 `dispatch-complete-from-output`。该 CLI 是正常完成的唯一入口。
+**协调器捕获方式**：受管 Worker 用 `herdr agent prompt --wait` 投递并等待，再用 `herdr agent read` 读取输出。协调器脚本不解析报告；它把完整输出交给 `dispatch-complete-from-output`。该 CLI 是正常完成的唯一入口。匹配的 `TASK_ASK` 由 `dispatch-ask-from-output` 持久化为 blocked，Coordinator 用 `dispatch-answer` 记录答案后再 prompt 同一 Worker。
 
 如果输出没有有效报告，或 Herdr 状态是 `blocked`、`unknown`、timeout，调用 `dispatch-block` 保存证据。不得从 `idle` 或 `done` 推断成功。
 
@@ -529,6 +533,8 @@ python db/phalanx_db.py dispatch-complete-from-output --dispatch <disp_id> --coo
 ```
 
 **omp 渲染兼容性（v0.6.1 修复）**：omp 会把 `## TASK_COMPLETE` 渲染成标题（去掉 `##`），且 `TASK_COMPLETE` 与 `outcome:` 之间可能有空行，`files_modified` 的值可能不带引号（如 `[a.py, b.py]`）。`parse_worker_done` 已兼容以上所有格式，dispatcher 无需特殊处理。
+
+**执行模式（v0.7.1）**：`managed` Task 只能由同模式的 verified capability 领取，经过 `agent start -> agent prompt -> agent read` 闭环。`raw-pane` capability 只用于显式无状态命令，例如 `pane run ... pi -p`；它不能领取 managed Task 或运行 coordinator adapter。
 
 ---
 

@@ -309,6 +309,8 @@ python -m unittest db.tests.test_phalanx_db -v
 - 成功、失败重试和重复完成拒绝。
 - 缺少报告、blocked、unknown、timeout 的证据化阻塞。
 - 阻塞后的重试或确认失败。
+- `managed` 与 `raw-pane` capability 的领取边界。
+- `TASK_ASK` 的持久化和 Coordinator 恢复。
 
 真实 Herdr 冒烟验证必须在隔离 Workspace 中执行。检查项见 [`references/coordinator-smoke-matrix.md`](references/coordinator-smoke-matrix.md)。
 
@@ -335,6 +337,6 @@ herdr-phalanx/
 
 ## 版本和许可
 
-当前版本：`0.7.0`。
+当前版本：`0.7.1`。
 
 [MIT License](./LICENSE) © 2026 OahMoza

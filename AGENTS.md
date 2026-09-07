@@ -18,7 +18,7 @@ This is a single-context repository. See `docs/agents/domain.md`.
 
 - This is a Windows-focused Herdr orchestration skill, not a package-managed application. `SKILL.md` is the primary behavior specification; `references/herdr-cli-quickref.md` is the verified Herdr v0.8.2 command reference.
 - The executable component is `db/phalanx_db.py`: a Python standard-library SQLite CLI implementing Run -> Task -> Dispatch orchestration. Its schema is `db/schema.sql`; keep CLI behavior and schema changes compatible.
-- `templates/worker_done_preamble.md` defines the structured completion contract consumed by `parse_worker_done()`. Use the CLI's `parse-worker-done` or `dispatch-complete-from-output` rather than adding coordinator-side regex parsing; OMP can render the marker without `##` and emit unquoted file lists.
+- `templates/worker_done_preamble.md` defines the structured completion and question contracts consumed by `parse_worker_done()` and `parse_worker_ask()`. Use CLI parsing/persistence commands rather than coordinator-side regex parsing; `TASK_COMPLETE` and `TASK_ASK` must bind the current `dispatch_id`.
 - `templates/coordinator_loop.ps1` is a thin Herdr-and-Phalanx adapter. It must use Herdr only to prompt, wait, and read; it must use the CLI to parse and persist results. Do not add inline worker-report parsing or direct SQLite writes.
 
 ## Verification

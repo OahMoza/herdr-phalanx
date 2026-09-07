@@ -119,10 +119,12 @@ herdr 原生没有任务编排层（Run/Task/Dispatch/DAG/worker_done），Phala
 python db/phalanx_db.py init-db
 python db/phalanx_db.py run-create --objective "..." --workspace w1
 python db/phalanx_db.py run-status --run <id>
-python db/phalanx_db.py task-add --run <id> --spec "..." --deps <task_id> --role Developer
+python db/phalanx_db.py task-add --run <id> --spec "..." --deps <task_id> --role Developer --execution-mode managed
 python db/phalanx_db.py task-ready --run <id>
 python db/phalanx_db.py task-claim --task <id> --coordinator <name> --kind omp --agent-name dev1 --pane w1:p3
 python db/phalanx_db.py dispatch-complete-from-output --dispatch <id> --coordinator <name> --text "<worker output>"
+python db/phalanx_db.py dispatch-ask-from-output --dispatch <id> --coordinator <name> --text "<worker output>"
+python db/phalanx_db.py dispatch-answer --dispatch <id> --coordinator <name> --answer "<answer>"
 python db/phalanx_db.py dispatch-block --dispatch <id> --coordinator <name> --state settled --reason "missing report" --evidence '{}'
 python db/phalanx_db.py event-log --run <id> --limit 20
 ```
