@@ -261,6 +261,7 @@ def parse_worker_done(text: str) -> dict:
     - Standard format: ## TASK_COMPLETE\\noutcome: succeeded\\nfiles_modified: [\"a.py\"]\\nsummary: ...
     - omp rendered (no ##): TASK_COMPLETE\\noutcome: ...
     - omp rendered (blank line between marker and fields): TASK_COMPLETE\\n\\noutcome: ...
+    - OpenCode rendered: TASK_COMPLETE     outcome: succeeded\n...
     - Missing fields: defaults applied
 
     Returns: {parsed: bool, dispatch_id: str, outcome: str, files_modified: list, summary: str, raw_marker: str}
@@ -285,7 +286,10 @@ def parse_worker_done(text: str) -> dict:
     match = tokens[-1]
     if not marker_pattern.fullmatch(match.group(0)):
         return result
-    if not re.match(r"[ \t]*(?:\r?\n|$)", text[match.end():]):
+    if not re.match(
+        r"[ \t]*(?:\r?\n|(?=(?:dispatch_id|outcome|files_modified|summary)\s*:)|$)",
+        text[match.end():],
+    ):
         return result
 
     result["parsed"] = True

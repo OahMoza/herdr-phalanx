@@ -121,6 +121,19 @@ summary: 3个测试全部通过。
         self.assertEqual(result["outcome"], "succeeded")
         self.assertEqual(result["files_modified"], ["test_reverse.py"])
 
+    def test_opencode_rendered_marker_and_first_field_on_same_line(self):
+        text = """TASK_COMPLETE     dispatch_id: disp_opencode
+outcome: succeeded
+files_modified: []
+summary: opencode report.
+"""
+        result = db.parse_worker_done(text)
+
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["dispatch_id"], "disp_opencode")
+        self.assertEqual(result["outcome"], "succeeded")
+        self.assertEqual(result["summary"], "opencode report.")
+
     def test_failed_outcome(self):
         text = """## TASK_COMPLETE
 outcome: failed
