@@ -2,6 +2,11 @@
 
 Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行多个编码智能体，并用 SQLite 保存每次任务运行、工作项、执行记录、智能体能力和事件证据。
 
+它解决问题的方式分两层：
+
+- 业务编排层（Phalanx DB）：单一 Coordinator 的 Run / Task / Dispatch / Gate / Event 模型。
+- 通信基础设施层（Agent Bus）：独立 N:N 队列基础设施，支持多 Producer、多 Worker 竞争消费，事件游标定向回投。
+
 它解决的问题不是“如何启动很多智能体”，而是“如何可靠地分配、跟踪、完成或阻塞工作”。
 
 ```text
@@ -36,6 +41,11 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 | 职责 | Role | 工作项要求的责任，例如 `Developer`、`QA`、`Reviewer`。 |
 | 能力证据 | Capability observation | 本机对 Agent 可用性的记录，含 `managed` 或 `raw-pane` 执行模式。 |
 | 事件 | Event | 追加式审计记录，用于恢复和排查。 |
+| Agent Bus | Agent Bus | 独立的 N:N 消息队列基础设施，与 Phalanx Run/Task/Dispatch 并存。 |
+| 消息 | Message | Agent Bus 的通信单元；`id` 即 `correlation_id`。 |
+| 路由 | Route | `agent_kind + optional profile`，有独立的并发上限。 |
+| 租约 | Lease | Bus 消息的临时独占执行权。 |
+| 结果 | Result | Bus 消息的可靠回投结果，与业务验收解耦。 |
 
 ## 用户故事
 
@@ -78,6 +88,17 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 ```
 
 重要规则：Herdr 的 `idle` 和 `done` 只表示“现在应读取输出”。它们不表示工作项成功。只有已解析的 `TASK_COMPLETE` 才能正常完成执行记录。
+
+## Agent Bus
+
+独立于业务编排层的多 Agent 通信基础设施：
+
+- 数据库：`~/.herdr-phalanx/agent-bus.db`（可被 `AGENT_BUS_DB` 覆盖）。
+- 原始证据：`~/.herdr-phalanx/runs/agent-bus/`（可被 `AGENT_BUS_ARTIFACTS` 覆盖）。
+- CLI：`python db/agent_bus.py <command>`。协议详见 `references/agent-bus-protocol.md`。
+- 与 Phalanx DB 完全分离存储；不修改 Run / Task / Dispatch。
+- 运行机制：M:N 竞争消费，1:1 结果回投，lease 串行化多写者。
+- 不引入常驻守护进程：Operator 通过 `templates/agent_bus_supervisor.ps1` 按需驱动。
 
 ## 安装
 
