@@ -8,12 +8,15 @@ param(
     [Parameter(Mandatory = $true)][string]$PaneId,
     [string]$TabId,
     [string]$Profile,
-    [int]$WaitTimeoutMs = 900000
+    [int]$WaitTimeoutMs = 900000,
+    [ValidateSet("blocking", "non-blocking")]
+    [string]$DispatchMode = "blocking"
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $dbScript = Join-Path $root "db/phalanx_db.py"
+$readerScript = Join-Path $root "templates/reader.ps1"
 $preamblePath = Join-Path $root "templates/worker_done_preamble.md"
 $preamble = Get-Content -LiteralPath $preamblePath -Raw
 
@@ -50,15 +53,35 @@ while ($true) {
         $claim = Invoke-Phalanx $claimArgs
 
         $prompt = "$preamble`n`n## Dispatch ID`n$($claim.dispatch.id)`n`n## Task`n$($task.spec)"
-        $waitOutput = herdr agent prompt $AgentName $prompt --wait --until idle --until done --until blocked --until unknown --timeout $WaitTimeoutMs 2>&1 | Out-String
+        $submit = herdr agent prompt $AgentName $prompt 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            Block-Dispatch $claim.dispatch.id "blocked" "agent prompt failed" $submit
+            continue
+        }
+
+        if ($DispatchMode -eq "non-blocking") {
+            $readerArgs = @{
+                RunId = $RunId
+                Coordinator = $Coordinator
+                AgentName = $AgentName
+                DispatchId = $claim.dispatch.id
+                TabId = $TabId
+                PaneId = $PaneId
+                WaitTimeoutMs = $WaitTimeoutMs
+            }
+            Start-Job -ScriptBlock {
+                param($root, $args)
+                & (Join-Path $root "templates/reader.ps1") @args | Out-Null
+            } -ArgumentList $root, $readerArgs | Out-Null
+            Invoke-Phalanx @("event-log", "--run", $RunId, "--limit", "1") | Out-Null
+            continue
+        }
+
+        $waitOutput = herdr agent wait $AgentName --until idle --until done --until blocked --until unknown --timeout $WaitTimeoutMs 2>&1 | Out-String
         $timedOut = $LASTEXITCODE -ne 0
         if ($timedOut) {
             $output = herdr agent read $AgentName 2>&1 | Out-String
             Block-Dispatch $claim.dispatch.id "timeout" "timeout after output inspection" $output
-            continue
-        }
-        if (-not $waitOutput) {
-            Block-Dispatch $claim.dispatch.id "blocked" "agent prompt failed" ""
             continue
         }
 
