@@ -1,6 +1,7 @@
 # Herdr CLI Quick Reference
 
 > 本 skill 所有 herdr 命令的事实基础。最后核实：2026-09-06，herdr v0.8.2。已安装的 `herdr --skill` 是当前命令语法的权威来源。
+> **Windows Shell**: detected via `scripts/detect-shell.ps1` (pwsh → powershell 5.1 fallback).
 
 ## 版本与安装
 

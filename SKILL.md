@@ -61,6 +61,10 @@ platforms: [windows]
 - **C5**：不主动 `herdr server stop`，不杀 Herdr 主进程。
 - **C6**：跨 pane/agent 通信只能通过 prompt 或 shared file，不直接共享内存。
 
+### Shell 环境
+
+Shell 路径通过 `scripts/detect-shell.ps1` 动态检测，不硬编码。Windows 优先 PowerShell 7 (`pwsh`)，降级 PowerShell 5.1。OMP 的 `shellPath` 应设为检测到的路径。详见 `references/shell-conventions.md`。
+
 ### 升级接口（Versioning）
 
 本 skill 设计为可演进。升级点全部集中在 `## Upgrade Hooks` 段落，运行时新增角色 / 员工 / 拓扑模式都从这里插入，不动本体论主干。版本号见 frontmatter 下方。

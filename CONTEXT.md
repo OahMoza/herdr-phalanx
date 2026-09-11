@@ -52,6 +52,11 @@ The Agent Bus is split into three layers; new code should respect the seams.
 - **Executable Callback**: the modern callback registration path. Stored as `bus_callbacks.executable` + `bus_callbacks.arguments_json` (JSON array of argv entries). Delivered by `SubprocessCommandRunner`. The `shell=True` template path remains as `ShellTemplateCommandRunner` for backward compatibility.
 - **worker-loop**: the new Bus CLI subcommand that wires Core → Herdr Adapter → TUI Worker in a single round trip. Sole integration point between the Bus and Herdr; not a daemon.
 
+## Shell conventions
+
+- **Shell detection**: Skill uses `scripts/detect-shell.ps1` to find the user's shell. Prefers PowerShell 7 (`pwsh`), falls back to PowerShell 5.1. Never hardcoded.
+- **OMP shellPath**: `~/.omp/agent/settings.json` `shellPath` should be set to the detected shell path on Windows.
+
 ## Cross-layer terms
 
 - **Bridge**: a future module that projects Phalanx Task creation into Bus Message enqueue, and Bus Message completion back into Phalanx Dispatch / Task state. The bridge is **explicitly out of scope** for the Agent Bus PRD and will be specified in `references/agent-bus-phalanx-bridge.md`.
