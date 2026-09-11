@@ -13,7 +13,7 @@ result: partial
 
 ## 测试状态
 
-**部分通过**：Claude Code 可以正确接收和解析 Bus envelope，但模型选择有问题。
+**架构不兼容**：Claude Code 是交互式 agent，不支持自动处理传入 prompt。
 
 ## 已知问题
 
@@ -34,9 +34,26 @@ Claude Code 有**独立的模型目录**，与 Pi 的 `pi-claude-cli` provider �
 
 Claude Code 默认使用 "Haiku with medium effort"，但实际映射到 `gpt-5.6-luna`（可能通过 `behavesAs` 或 `modelOverrides` 配置）。该模型无 credits。
 
-### 可行的模型
+### 架构限制
 
-需要通过 `/model` 命令或 Claude Code 的配置界面选择模型。当前未找到可用的模型。
+Claude Code 是**交互式 agent**，设计为人类在环。当 worker-loop 发送 lease prompt 时：
+
+1. ✅ Claude Code 接收并显示 envelope
+2. ❌ **不会自动执行命令**——等待用户手动确认
+3. ❌ 需要人工干预才能调 `complete`
+
+**对比**：
+
+| Agent | 自动处理传入 prompt | 无需人类确认 |
+|---|---|---|
+| Pi | ✅ | ✅ |
+| OpenCode | ✅ | ✅ |
+| OMP | ✅ | ✅ |
+| **Claude Code** | ❌ | ❌ |
+
+**结论**：Claude Code **不适合**作为 Bus Worker。它的交互式设计决定了它需要人类在环才能执行命令。Bus Worker 需要全自动处理，Claude Code 无法满足。
+
+如果需要使用 Claude Code，应通过 Phalanx 的 `managed` 模式（Coordinator 直接管理），而非 Bus 的 `worker-loop`。
 
 ## 启动 Claude Code Worker
 
