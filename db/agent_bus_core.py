@@ -1158,8 +1158,6 @@ class AgentBus:
         agent_kind: str,
         profile: Optional[str],
         agent_name: str,
-        pane_id: str,
-        tab_id: str,
         commander_runner,
         prompt_builder,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
@@ -1179,8 +1177,6 @@ class AgentBus:
         prompt = prompt_builder(dict(claim))
         run_result = commander_runner.run_agent_prompt(
             agent_name=agent_name,
-            pane_id=pane_id,
-            tab_id=tab_id,
             prompt=prompt,
             timeout=lease_seconds,
         )
@@ -1193,8 +1189,6 @@ class AgentBus:
                 "lease_id": claim["lease_id"],
                 "worker_id": worker_id,
                 "agent_name": agent_name,
-                "pane_id": pane_id,
-                "tab_id": tab_id,
                 "attempt": claim["attempts"],
                 "delivered": False,
                 "delivery_error": error,
@@ -1209,8 +1203,6 @@ class AgentBus:
             "lease_id": claim["lease_id"],
             "worker_id": worker_id,
             "agent_name": agent_name,
-            "pane_id": pane_id,
-            "tab_id": tab_id,
             "attempt": claim["attempts"],
         }
 

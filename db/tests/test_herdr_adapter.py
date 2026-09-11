@@ -29,11 +29,9 @@ class _FakeCommandRunner:
     def __init__(self) -> None:
         self.calls: List[dict] = []
 
-    def run_agent_prompt(self, *, agent_name, pane_id, tab_id, prompt, timeout):
+    def run_agent_prompt(self, *, agent_name, prompt, timeout):
         self.calls.append({
             "agent_name": agent_name,
-            "pane_id": pane_id,
-            "tab_id": tab_id,
             "prompt": prompt,
             "timeout": timeout,
         })
@@ -76,15 +74,21 @@ class TestBuildLeasePrompt(unittest.TestCase):
             db_module="db/agent_bus.py")
         self.assertIn("msg_abc", prompt)
         self.assertIn("lease_xyz", prompt)
-        # Allowed commands listed:
-        self.assertIn("heartbeat-message", prompt)
+        # Allowed commands listed (CLI subcommand names):
+        self.assertIn("heartbeat", prompt)
         self.assertIn("complete", prompt)
         self.assertIn("fail", prompt)
         self.assertIn("cancelled", prompt)
+        # Allowed flag names match the real CLI:
+        self.assertIn("--id", prompt)
+        self.assertIn("--worker-id", prompt)
+        self.assertIn("--lease", prompt)
+        self.assertIn("--result-file", prompt)
+        self.assertIn("--raw-report-file", prompt)
         # Forbidden commands called out:
         self.assertIn("enqueue", prompt)
         self.assertIn("claim", prompt)
-        # No raw lease details accidentally leaked into the prompt.
+        # Header marks the prompt as restricted.
         self.assertIn("RESTRICTED", prompt)
 
     def test_prompt_handles_profile_none(self):
@@ -107,8 +111,6 @@ class TestWorkerLoopOnce(_BusSetup):
             agent_kind="omp",
             profile=None,
             agent_name="omp-dev",
-            pane_id="p1",
-            tab_id="t1",
             commander_runner=self.runner,
             prompt_builder=lambda m: f"PROMPT-FOR-{m['id']}",
             lease_seconds=120,
@@ -119,8 +121,6 @@ class TestWorkerLoopOnce(_BusSetup):
         self.assertEqual(len(self.runner.calls), 1)
         call = self.runner.calls[0]
         self.assertEqual(call["agent_name"], "omp-dev")
-        self.assertEqual(call["pane_id"], "p1")
-        self.assertEqual(call["tab_id"], "t1")
         self.assertIn(msg["id"], call["prompt"])
         self.assertEqual(call["timeout"], 120)
         conn = sqlite3.connect(str(self.db_path))
@@ -138,7 +138,7 @@ class TestWorkerLoopOnce(_BusSetup):
     def test_no_pending_message_returns_clean_no_claim(self):
         result = self.bus.worker_loop_once(
             worker_id="omp-w1", agent_kind="omp", profile=None,
-            agent_name="omp-dev", pane_id="p1", tab_id="t1",
+            agent_name="omp-dev",
             commander_runner=self.runner,
             prompt_builder=lambda m: "should not run",
         )
@@ -153,7 +153,7 @@ class TestWorkerLoopOnce(_BusSetup):
                                 payload={"instruction": "go"})
         result = self.bus.worker_loop_once(
             worker_id="omp-w1", agent_kind="omp", profile=None,
-            agent_name="omp-dev", pane_id="p1", tab_id="t1",
+            agent_name="omp-dev",
             commander_runner=self.runner,
             prompt_builder=lambda m: "x",
         )

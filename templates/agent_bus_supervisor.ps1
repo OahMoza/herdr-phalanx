@@ -14,8 +14,6 @@ param(
     [Parameter(Mandatory = $true)][string]$WorkerId,
     [Parameter(Mandatory = $true)][string]$AgentName,
     [Parameter(Mandatory = $true)][string]$AgentKind,
-    [Parameter(Mandatory = $true)][string]$PaneId,
-    [Parameter(Mandatory = $true)][string]$TabId,
     [string]$Profile,
     [string]$DbOverride,
     [string]$ArtifactsOverride
@@ -44,9 +42,7 @@ $status = Invoke-BusQuiet @("route-status")
 $loopArgs = @("worker-loop",
     "--worker-id", $WorkerId,
     "--agent-kind", $AgentKind,
-    "--agent-name", $AgentName,
-    "--pane-id", $PaneId,
-    "--tab-id", $TabId)
+    "--agent-name", $AgentName)
 if ($Profile) { $loopArgs += @("--profile", $Profile) }
 
 $delivery = Invoke-BusQuiet $loopArgs

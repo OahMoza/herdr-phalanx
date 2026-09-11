@@ -293,11 +293,12 @@ python db/agent_bus.py worker-loop \
     --agent-kind  <kind> \
     --profile     <profile>  # optional
     --agent-name  <herdr agent name> \
-    --pane-id     <pane> \
-    --tab-id      <tab> \
     --lease-seconds 300 \
     [--herdr-bin PATH]
 ```
+
+Herdr routes by Agent name, so `--pane-id` and `--tab-id` are no
+longer required.
 
 1. The Core claims the next pending Message for the route
    (`agent_kind + profile`) inside one `BEGIN IMMEDIATE` transaction.
@@ -308,7 +309,9 @@ python db/agent_bus.py worker-loop \
    `worker-register`.
 3. The Herdr Adapter calls `HerdrCommanderRunner.run_agent_prompt`,
    which is the only place that shells out to Herdr. It uses
-   `subprocess.run([herdr_bin, "agent", "prompt", --agent, --workspace-pane, --prompt, --timeout, --no-block], shell=False)`.
+   `subprocess.run([herdr_bin, "agent", "prompt", agent_name, prompt, --timeout, MS], shell=False)` —
+   positional `<TARGET> <TEXT>` plus `--timeout`, matching the current
+   `herdr agent prompt --help` shape.
 4. On success the Core immediately heartbeats the lease so the prompt
    round-trip lag does not eat into the lease window.
 

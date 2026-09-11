@@ -327,7 +327,7 @@ def cmd_callback_deliver_one(_args: argparse.Namespace) -> None:
 
 def cmd_worker_loop(args: argparse.Namespace) -> None:
     """Claim one Message and deliver a restricted lease prompt to the
-    worker identified by `--agent-name` + `--pane-id` / `--tab-id`."""
+    waiting TUI Worker identified by `--agent-name`."""
 
     runner = herdr_adapter.HerdrCommanderRunner(herdr_bin=args.herdr_bin)
     payload = _bus().worker_loop_once(
@@ -335,8 +335,6 @@ def cmd_worker_loop(args: argparse.Namespace) -> None:
         agent_kind=args.agent_kind,
         profile=args.profile,
         agent_name=args.agent_name,
-        pane_id=args.pane_id,
-        tab_id=args.tab_id,
         commander_runner=runner,
         prompt_builder=lambda msg: herdr_adapter.build_lease_prompt(
             msg,
@@ -530,9 +528,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--worker-id", required=True)
     sp.add_argument("--agent-kind", required=True)
     sp.add_argument("--profile")
-    sp.add_argument("--agent-name", required=True)
-    sp.add_argument("--pane-id", required=True)
-    sp.add_argument("--tab-id", required=True)
+    sp.add_argument("--agent-name", required=True,
+                    help="Live Herdr Agent name (e.g. `inspect-pi`). "
+                         "Herdr routes by name, so pane/tab are not needed.")
     sp.add_argument("--lease-seconds", type=int,
                     default=core.DEFAULT_LEASE_SECONDS)
     sp.add_argument("--herdr-bin")

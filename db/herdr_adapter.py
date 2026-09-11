@@ -48,8 +48,6 @@ class HerdrCommanderRunner:
         self,
         *,
         agent_name: str,
-        pane_id: str,
-        tab_id: str,
         prompt: str,
         timeout: int,
     ) -> CommandResult:
@@ -58,11 +56,8 @@ class HerdrCommanderRunner:
                                  error="herdr binary not found on PATH")
         cmd = [
             self._herdr_bin, "agent", "prompt",
-            "--agent", agent_name,
-            "--workspace-pane", f"{tab_id}/{pane_id}",
-            "--prompt", prompt,
-            "--timeout", str(timeout),
-            "--no-block",
+            agent_name,
+            prompt,
         ]
         try:
             completed = subprocess.run(
@@ -133,40 +128,41 @@ def build_lease_prompt(
     artifact_dir = str(Path("~/.herdr-phalanx/runs/agent-bus") /
                        message_id / f"attempt-{attempts}")
     artifact_hint = (
-        f"\nIf your TUI cannot write to disk, append your final report to the\n"
-        f"chat with a TUI marker; the python `complete` command below will\n"
-        f"read it from `{artifact_dir}/raw.txt` (created via `--report-path`).\n"
+        f"\nWrite your raw report to `{artifact_dir}/raw.txt` (use\n"
+        f"`mkdir -p` first) and a structured result JSON to\n"
+        f"`{artifact_dir}/result.json`. The `complete` command below\n"
+        f"reads both files by path.\n"
     )
 
     complete_cmd = _render_cmd(python_executable, db_module,
         "complete",
-        {"--message-id": message_id,
+        {"--id": message_id,
          "--worker-id": "${WORKER_ID}",
-         "--lease-id": lease_id,
-         "--result-json": '${"status": "ok"}',
-         "--report-path": "${ARTIFACT_PATH}"})
+         "--lease": lease_id,
+         "--result-file": "${ARTIFACT_DIR}/result.json",
+         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"})
 
     fail_cmd = _render_cmd(python_executable, db_module,
         "fail",
-        {"--message-id": message_id,
+        {"--id": message_id,
          "--worker-id": "${WORKER_ID}",
-         "--lease-id": lease_id,
+         "--lease": lease_id,
          "--reason": "${REASON}",
-         "--report-path": "${ARTIFACT_PATH}"})
+         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"})
 
     cancelled_cmd = _render_cmd(python_executable, db_module,
         "cancelled",
-        {"--message-id": message_id,
+        {"--id": message_id,
          "--worker-id": "${WORKER_ID}",
-         "--lease-id": lease_id,
+         "--lease": lease_id,
          "--reason": "${REASON}",
-         "--report-path": "${ARTIFACT_PATH}"})
+         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"})
 
     heartbeat_cmd = _render_cmd(python_executable, db_module,
-        "heartbeat-message",
-        {"--message-id": message_id,
+        "heartbeat",
+        {"--id": message_id,
          "--worker-id": "${WORKER_ID}",
-         "--lease-id": lease_id})
+         "--lease": lease_id})
 
     sections = [
         header,
@@ -175,17 +171,20 @@ def build_lease_prompt(
         f"- agent_kind: `{agent_kind}`",
         f"- profile: `{profile or ''}`",
         f"- attempts: `{attempts}`",
+        f"- lease_id: `{lease_id}`",
         "",
         "## Payload",
         "```json",
         json.dumps(payload, ensure_ascii=False, indent=2),
         "```",
         "",
-        "## Allowed Commands (write to file then run)",
-        f"1. `{heartbeat_cmd}`",
-        f"2. `{complete_cmd}` (replace `--result-json` with your structured result)",
+        "## Allowed Commands",
+        f"Set `WORKER_ID=<your-herdr-agent-name>` and `ARTIFACT_DIR={artifact_dir}`",
+        f"(create the directory first), then run exactly one of:",
+        f"1. `{heartbeat_cmd}`  (renew the lease; call periodically)",
+        f"2. `{complete_cmd}`  (succeed; write result.json + raw.txt first)",
         f"3. `{fail_cmd}`",
-        f"4. `{cancelled_cmd}` (only if the producer already called `cancel` and "
+        f"4. `{cancelled_cmd}`  (only if the producer already called `cancel` and "
         "`cancel_requested` is true)",
         "",
         artifact_hint,
@@ -193,7 +192,7 @@ def build_lease_prompt(
         "- `enqueue`, `claim`, `route-set`, `route-delete`, `worker-register`",
         "- Any other CLI subcommand of `agent_bus.py` not listed above",
         "",
-        "Reply to this prompt in your TUI when ready.",
+        "Reply in your TUI when done.",
     ]
     return "\n".join(sections)
 

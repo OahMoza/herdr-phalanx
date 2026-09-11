@@ -14,8 +14,6 @@ param(
     [Parameter(Mandatory = $true)][string]$AgentName,
     [Parameter(Mandatory = $true)][string]$AgentKind,
     [string]$Profile,
-    [Parameter(Mandatory = $true)][string]$PaneId,
-    [Parameter(Mandatory = $true)][string]$TabId,
     [int]$LeaseSeconds = 300,
     [string]$DbOverride,
     [string]$ArtifactsOverride
@@ -32,8 +30,6 @@ $args = @("worker-loop",
     "--worker-id", $WorkerId,
     "--agent-kind", $AgentKind,
     "--agent-name", $AgentName,
-    "--pane-id", $PaneId,
-    "--tab-id", $TabId,
     "--lease-seconds", "$LeaseSeconds")
 if ($Profile) { $args += @("--profile", $Profile) }
 
