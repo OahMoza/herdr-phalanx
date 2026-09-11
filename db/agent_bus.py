@@ -351,7 +351,8 @@ def cmd_worker_loop(args: argparse.Namespace) -> None:
     waiting TUI Worker identified by `--agent-name`."""
 
     runner = herdr_adapter.HerdrCommanderRunner(herdr_bin=args.herdr_bin)
-    payload = _bus().worker_loop_once(
+    bus_instance = _bus()
+    payload = bus_instance.worker_loop_once(
         worker_id=args.worker_id,
         agent_kind=args.agent_kind,
         profile=args.profile,
@@ -363,6 +364,8 @@ def cmd_worker_loop(args: argparse.Namespace) -> None:
             profile=args.profile,
             python_executable=sys.executable,
             db_module=str(Path(__file__).resolve()),
+            database_path=str(bus_instance.database_path),
+            artifacts_root=str(bus_instance.artifacts_root),
         ),
         lease_seconds=args.lease_seconds,
     )

@@ -220,6 +220,16 @@ class AgentBus:
         self._db_open = db_open or self._default_db_open
         self._clock = _now
 
+    # ---------- read-only accessors ----------
+
+    @property
+    def database_path(self) -> Path:
+        return self._database_path
+
+    @property
+    def artifacts_root(self) -> Path:
+        return self._artifacts_root
+
     # ---------- configuration / setup ----------
 
     @staticmethod

@@ -65,15 +65,19 @@ class TestBuildLeasePrompt(unittest.TestCase):
         msg = {
             "id": "msg_abc",
             "lease_id": "lease_xyz",
+            "worker_id": "omp-w1",
             "attempts": 1,
             "payload": {"instruction": "say hi", "workspace": "/tmp"},
         }
         prompt = herdr_adapter.build_lease_prompt(
             msg, agent_kind="omp", profile=None,
             python_executable="python",
-            db_module="db/agent_bus.py")
+            db_module="db/agent_bus.py",
+            database_path="/tmp/test-bus.db",
+            artifacts_root="/tmp/test-runs")
         self.assertIn("msg_abc", prompt)
         self.assertIn("lease_xyz", prompt)
+        self.assertIn("omp-w1", prompt)
         # Allowed commands listed (CLI subcommand names):
         self.assertIn("heartbeat", prompt)
         self.assertIn("complete", prompt)
@@ -90,13 +94,19 @@ class TestBuildLeasePrompt(unittest.TestCase):
         self.assertIn("claim", prompt)
         # Header marks the prompt as restricted.
         self.assertIn("RESTRICTED", prompt)
+        # Database path is injected into every command.
+        self.assertIn("AGENT_BUS_DB=/tmp/test-bus.db", prompt)
+        # Worker ID is injected (not left for the worker to guess).
+        self.assertIn("WORKER_ID=omp-w1", prompt)
 
     def test_prompt_handles_profile_none(self):
         msg = {"id": "msg_x", "lease_id": "lease_x", "attempts": 1, "payload": {}}
         prompt = herdr_adapter.build_lease_prompt(
             msg, agent_kind="omp", profile=None,
             python_executable="python",
-            db_module="db/agent_bus.py")
+            db_module="db/agent_bus.py",
+            database_path="/tmp/test-bus.db",
+            artifacts_root="/tmp/test-runs")
         self.assertIn("profile: ``", prompt)
 
 

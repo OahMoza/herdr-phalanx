@@ -114,19 +114,29 @@ def build_lease_prompt(
     profile: Optional[str],
     python_executable: str,
     db_module: str,
+    database_path: str,
+    artifacts_root: str,
     header: str = DEFAULT_LEASE_PROMPT_HEADER,
 ) -> str:
     """Render the prompt that is delivered to a waiting TUI Worker. The first
     line of the header is reserved for the restriction notice; the body lists
     the four allowed CLI calls, the `complete`/`fail`/`cancelled` parameters
-    they expect, and a copy of the inbound payload."""
+    they expect, and a copy of the inbound payload.
+
+    ``database_path`` is the absolute path to the SQLite file, injected into
+    every command as ``AGENT_BUS_DB=`` so the Worker calls back against the
+    same database the Producer used (never the default ``~/.herdr-phalanx``).
+
+    ``artifacts_root`` is the absolute root for attempt artifacts; the
+    ``ARTIFACT_DIR`` variable in the prompt is set to the message-specific
+    subdirectory beneath it."""
 
     payload = message.get("payload") or {}
     message_id = message.get("id", "")
     lease_id = message.get("lease_id", "")
     attempts = message.get("attempts", 1)
-    artifact_dir = str(Path("~/.herdr-phalanx/runs/agent-bus") /
-                       message_id / f"attempt-{attempts}")
+    worker_id = message.get("worker_id", "")
+    artifact_dir = str(Path(artifacts_root) / message_id / f"attempt-{attempts}")
     artifact_hint = (
         f"\nWrite your raw report to `{artifact_dir}/raw.txt` (use\n"
         f"`mkdir -p` first) and a structured result JSON to\n"
@@ -134,13 +144,15 @@ def build_lease_prompt(
         f"reads both files by path.\n"
     )
 
+    env_prefix = f"AGENT_BUS_DB={database_path}"
     complete_cmd = _render_cmd(python_executable, db_module,
         "complete",
         {"--id": message_id,
          "--worker-id": "${WORKER_ID}",
          "--lease": lease_id,
          "--result-file": "${ARTIFACT_DIR}/result.json",
-         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"})
+         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"},
+        env_prefix=env_prefix)
 
     fail_cmd = _render_cmd(python_executable, db_module,
         "fail",
@@ -148,7 +160,8 @@ def build_lease_prompt(
          "--worker-id": "${WORKER_ID}",
          "--lease": lease_id,
          "--reason": "${REASON}",
-         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"})
+         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"},
+        env_prefix=env_prefix)
 
     cancelled_cmd = _render_cmd(python_executable, db_module,
         "cancelled",
@@ -156,13 +169,15 @@ def build_lease_prompt(
          "--worker-id": "${WORKER_ID}",
          "--lease": lease_id,
          "--reason": "${REASON}",
-         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"})
+         "--raw-report-file": "${ARTIFACT_DIR}/raw.txt"},
+        env_prefix=env_prefix)
 
     heartbeat_cmd = _render_cmd(python_executable, db_module,
         "heartbeat",
         {"--id": message_id,
          "--worker-id": "${WORKER_ID}",
-         "--lease": lease_id})
+         "--lease": lease_id},
+        env_prefix=env_prefix)
 
     sections = [
         header,
@@ -172,6 +187,7 @@ def build_lease_prompt(
         f"- profile: `{profile or ''}`",
         f"- attempts: `{attempts}`",
         f"- lease_id: `{lease_id}`",
+        f"- worker_id: `{worker_id}`",
         "",
         "## Payload",
         "```json",
@@ -179,7 +195,7 @@ def build_lease_prompt(
         "```",
         "",
         "## Allowed Commands",
-        f"Set `WORKER_ID=<your-herdr-agent-name>` and `ARTIFACT_DIR={artifact_dir}`",
+        f"Set `WORKER_ID={worker_id}` and `ARTIFACT_DIR={artifact_dir}`",
         f"(create the directory first), then run exactly one of:",
         f"1. `{heartbeat_cmd}`  (renew the lease; call periodically)",
         f"2. `{complete_cmd}`  (succeed; write result.json + raw.txt first)",
@@ -198,8 +214,9 @@ def build_lease_prompt(
 
 
 def _render_cmd(python_executable: str, db_module: str,
-                subcommand: str, flags: dict[str, str]) -> str:
-    parts = [python_executable, db_module, subcommand]
+                subcommand: str, flags: dict[str, str],
+                env_prefix: Optional[str] = None) -> str:
+    parts = ([env_prefix] if env_prefix else []) + [python_executable, db_module, subcommand]
     for flag, value in flags.items():
         parts.append(flag)
         parts.append(value)
