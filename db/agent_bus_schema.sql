@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS bus_workers (
   permission_mode     TEXT,
   cwd                 TEXT,
   registered_by       TEXT DEFAULT 'operator',
+  model               TEXT,
+  intensity           TEXT,
   agent_version       TEXT,
   herdr_version       TEXT,
   status              TEXT NOT NULL DEFAULT 'ready',

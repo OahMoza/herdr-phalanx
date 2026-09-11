@@ -138,6 +138,8 @@ def cmd_worker_register(args: argparse.Namespace) -> None:
         permission_mode=getattr(args, "permission_mode", None),
         cwd=getattr(args, "cwd", None),
         registered_by=getattr(args, "registered_by", None),
+        model=getattr(args, "model", None),
+        intensity=getattr(args, "intensity", None),
         agent_version=getattr(args, "agent_version", None),
         herdr_version=getattr(args, "herdr_version", None),
         status=args.status,
@@ -425,6 +427,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--permission-mode")
     sp.add_argument("--cwd")
     sp.add_argument("--registered-by", default="operator")
+    sp.add_argument("--model", help='Model ID, e.g. "longcat-2.0", "minimax-m2.7"')
+    sp.add_argument("--intensity", help='Intensity level, e.g. "light", "medium", "heavy"')
     sp.add_argument("--agent-version")
     sp.add_argument("--herdr-version")
     sp.add_argument("--status", default="ready")

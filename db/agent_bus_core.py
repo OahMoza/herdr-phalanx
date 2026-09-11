@@ -286,6 +286,8 @@ class AgentBus:
             ("permission_mode", "TEXT"),
             ("cwd", "TEXT"),
             ("registered_by", "TEXT DEFAULT 'operator'"),
+            ("model", "TEXT"),
+            ("intensity", "TEXT"),
             ("agent_version", "TEXT"),
             ("herdr_version", "TEXT"),
             ("messages_claimed", "INTEGER NOT NULL DEFAULT 0"),
@@ -506,6 +508,8 @@ class AgentBus:
         permission_mode: Optional[str] = None,
         cwd: Optional[str] = None,
         registered_by: Optional[str] = None,
+        model: Optional[str] = None,
+        intensity: Optional[str] = None,
         agent_version: Optional[str] = None,
         herdr_version: Optional[str] = None,
         status: str = "ready",
@@ -520,9 +524,9 @@ class AgentBus:
                 """INSERT INTO bus_workers
                    (worker_id, agent_kind, profile, agent_name, workspace_id,
                     pane_id, tab_id, session_id, roles, launch_args, permission_mode,
-                    cwd, registered_by, agent_version, herdr_version, status,
-                    metadata, last_seen_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    cwd, registered_by, model, intensity, agent_version, herdr_version,
+                    status, metadata, last_seen_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(worker_id) DO UPDATE SET
                      agent_kind=excluded.agent_kind,
                      profile=excluded.profile,
@@ -536,6 +540,8 @@ class AgentBus:
                      permission_mode=excluded.permission_mode,
                      cwd=excluded.cwd,
                      registered_by=excluded.registered_by,
+                     model=excluded.model,
+                     intensity=excluded.intensity,
                      agent_version=excluded.agent_version,
                      herdr_version=excluded.herdr_version,
                      status=excluded.status,
@@ -543,8 +549,8 @@ class AgentBus:
                      last_seen_at=excluded.last_seen_at""",
                 (worker_id, agent_kind, profile, agent_name, workspace_id,
                  pane_id, tab_id, session_id, roles_json, launch_args, permission_mode,
-                 cwd, registered_by or "operator", agent_version, herdr_version,
-                 status, metadata_json, self._clock()),
+                 cwd, registered_by or "operator", model, intensity, agent_version,
+                 herdr_version, status, metadata_json, self._clock()),
             )
             self._log(conn, "worker_registered", actor_id=actor_id or worker_id,
                       payload={"agent_kind": agent_kind, "profile": profile})

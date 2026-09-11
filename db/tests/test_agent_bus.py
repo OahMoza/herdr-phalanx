@@ -157,6 +157,8 @@ class TestWorkerRegistration(_BusTestCase):
             "--permission-mode", "bypassPermissions",
             "--cwd", "E:\\WorkSpace\\github\\herdr-phalanx",
             "--registered-by", "supervisor",
+            "--model", "longcat-2.0",
+            "--intensity", "heavy",
             "--agent-version", "omp v18.0.4",
             "--herdr-version", "herdr 0.9.0",
         ], self.env)
@@ -168,6 +170,8 @@ class TestWorkerRegistration(_BusTestCase):
         self.assertEqual(row["permission_mode"], "bypassPermissions")
         self.assertEqual(row["cwd"], "E:\\WorkSpace\\github\\herdr-phalanx")
         self.assertEqual(row["registered_by"], "supervisor")
+        self.assertEqual(row["model"], "longcat-2.0")
+        self.assertEqual(row["intensity"], "heavy")
         self.assertEqual(row["agent_version"], "omp v18.0.4")
         self.assertEqual(row["herdr_version"], "herdr 0.9.0")
         self.assertEqual(row["messages_claimed"], 0)
@@ -232,9 +236,9 @@ class TestWorkerMigration(unittest.TestCase):
 
         for expected in (
             "workspace_id", "session_id", "roles", "launch_args",
-            "permission_mode", "cwd", "registered_by", "agent_version",
-            "herdr_version", "messages_claimed", "messages_completed",
-            "messages_failed",
+            "permission_mode", "cwd", "registered_by", "model", "intensity",
+            "agent_version", "herdr_version", "messages_claimed",
+            "messages_completed", "messages_failed",
         ):
             self.assertIn(expected, cols)
         self.assertIsNotNone(row)

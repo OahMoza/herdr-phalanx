@@ -339,6 +339,8 @@ consumes Bus messages. Each row is a **Worker record**:
 | `permission_mode` | `bypassPermissions`, `auto-approve`, ... |
 | `cwd` | Working directory |
 | `registered_by` | `operator`, `supervisor`, `auto` |
+| `model` | Model ID (e.g. `longcat-2.0`, `minimax-m2.7`) |
+| `intensity` | Intensity level (e.g. `light`, `medium`, `heavy`) |
 | `agent_version` | Agent binary version |
 | `herdr_version` | Herdr version at registration |
 | `messages_claimed` / `messages_completed` / `messages_failed` | Running statistics |
