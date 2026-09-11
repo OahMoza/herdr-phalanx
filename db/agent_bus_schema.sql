@@ -80,15 +80,27 @@ CREATE INDEX IF NOT EXISTS idx_bus_events_message
 -- bus_workers: 可选可观测注册，不影响 max_in_flight
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS bus_workers (
-  worker_id         TEXT PRIMARY KEY,
-  agent_kind        TEXT NOT NULL,
-  profile           TEXT,
-  agent_name        TEXT,
-  pane_id           TEXT,
-  tab_id            TEXT,
-  status            TEXT NOT NULL DEFAULT 'ready',
-  last_seen_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  metadata          TEXT
+  worker_id           TEXT PRIMARY KEY,
+  agent_kind          TEXT NOT NULL,
+  profile             TEXT,
+  agent_name          TEXT,
+  workspace_id        TEXT,
+  pane_id             TEXT,
+  tab_id              TEXT,
+  session_id          TEXT,
+  roles               TEXT,
+  launch_args         TEXT,
+  permission_mode     TEXT,
+  cwd                 TEXT,
+  registered_by       TEXT DEFAULT 'operator',
+  agent_version       TEXT,
+  herdr_version       TEXT,
+  status              TEXT NOT NULL DEFAULT 'ready',
+  last_seen_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  messages_claimed    INTEGER NOT NULL DEFAULT 0,
+  messages_completed  INTEGER NOT NULL DEFAULT 0,
+  messages_failed     INTEGER NOT NULL DEFAULT 0,
+  metadata            TEXT
 );
 
 -- ------------------------------------------------------------

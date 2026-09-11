@@ -117,13 +117,29 @@ def cmd_route_delete(args: argparse.Namespace) -> None:
 
 def cmd_worker_register(args: argparse.Namespace) -> None:
     metadata = _read_payload_from_arg(args, "metadata") or {}
+    roles_raw = getattr(args, "roles", None)
+    roles = None
+    if roles_raw:
+        try:
+            roles = json.loads(roles_raw)
+        except json.JSONDecodeError:
+            roles = [r.strip() for r in roles_raw.split(",") if r.strip()]
     payload = _bus().register_worker(
         worker_id=args.worker_id,
         agent_kind=args.agent_kind,
         profile=args.profile,
         agent_name=args.agent_name,
+        workspace_id=getattr(args, "workspace_id", None),
         pane_id=args.pane,
         tab_id=args.tab,
+        session_id=getattr(args, "session_id", None),
+        roles=roles,
+        launch_args=getattr(args, "launch_args", None),
+        permission_mode=getattr(args, "permission_mode", None),
+        cwd=getattr(args, "cwd", None),
+        registered_by=getattr(args, "registered_by", None),
+        agent_version=getattr(args, "agent_version", None),
+        herdr_version=getattr(args, "herdr_version", None),
         status=args.status,
         metadata=metadata,
     )
@@ -392,8 +408,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--agent-kind", required=True)
     sp.add_argument("--profile")
     sp.add_argument("--agent-name")
+    sp.add_argument("--workspace-id")
     sp.add_argument("--pane")
     sp.add_argument("--tab")
+    sp.add_argument("--session-id")
+    sp.add_argument("--roles", help='JSON array or comma list, e.g. "Developer,QA"')
+    sp.add_argument("--launch-args")
+    sp.add_argument("--permission-mode")
+    sp.add_argument("--cwd")
+    sp.add_argument("--registered-by", default="operator")
+    sp.add_argument("--agent-version")
+    sp.add_argument("--herdr-version")
     sp.add_argument("--status", default="ready")
     sp.add_argument("--metadata", default="{}")
     sp.set_defaults(func=cmd_worker_register)

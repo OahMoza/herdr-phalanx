@@ -320,6 +320,38 @@ reclaim it when `lease_until` expires. The new `agent_bus_supervisor.ps1`
 and `worker_loop.ps1` PowerShell templates are thin shims over
 `worker-loop` and no longer assemble prompts inline.
 
+## Worker registry
+
+`bus_workers` carries the identity and capabilities of a TUI Agent that
+consumes Bus messages. Each row is a **Worker record**:
+
+| Column | Purpose |
+|---|---|
+| `worker_id` | Unique audit identifier (e.g. `omp-w1`) |
+| `agent_kind` | `omp`, `pi`, `claude`, ... |
+| `profile` | Optional profile |
+| `agent_name` | Herdr live name (e.g. `omp-dev-1`) |
+| `workspace_id` | Herdr workspace the worker lives in |
+| `pane_id` / `tab_id` | Topology position |
+| `session_id` | Herdr agent session ID |
+| `roles` | JSON array of capabilities (`["Developer", "QA"]`) |
+| `launch_args` | Arguments the agent was started with |
+| `permission_mode` | `bypassPermissions`, `auto-approve`, ... |
+| `cwd` | Working directory |
+| `registered_by` | `operator`, `supervisor`, `auto` |
+| `agent_version` | Agent binary version |
+| `herdr_version` | Herdr version at registration |
+| `messages_claimed` / `messages_completed` / `messages_failed` | Running statistics |
+
+`worker-register` is idempotent: re-registering an existing `worker_id`
+updates all fields. `heartbeat-worker` refreshes `last_seen_at`.
+`route-status` uses `last_seen_at >= now() - 5min` to count
+`active_workers` per Route.
+
+Legacy databases with the original 9-column `bus_workers` are migrated
+forward by `init-db` (ALTER TABLE ADD COLUMN for each missing column).
+Existing rows keep their data; new columns default to NULL/0.
+
 ## TUI markers
 
 Bus Workers continue to emit the structured `TASK_COMPLETE` / `TASK_ASK`

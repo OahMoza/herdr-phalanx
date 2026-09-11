@@ -146,6 +146,100 @@ class TestWorkerRegistration(_BusTestCase):
         self.assertEqual(omp["active_workers"], 3)
         self.assertEqual(omp["max_in_flight"], 1)
 
+    def test_worker_register_with_new_fields(self):
+        row = _run_cli([
+            "worker-register", "--worker-id", "full-w1", "--agent-kind", "omp",
+            "--agent-name", "omp-dev-1", "--workspace-id", "wD",
+            "--pane", "wD:p2", "--tab", "wD:t1",
+            "--session-id", "ses_abc123",
+            "--roles", "Developer,QA",
+            "--launch-args=--auto-approve",
+            "--permission-mode", "bypassPermissions",
+            "--cwd", "E:\\WorkSpace\\github\\herdr-phalanx",
+            "--registered-by", "supervisor",
+            "--agent-version", "omp v18.0.4",
+            "--herdr-version", "herdr 0.9.0",
+        ], self.env)
+        self.assertEqual(row["worker_id"], "full-w1")
+        self.assertEqual(row["workspace_id"], "wD")
+        self.assertEqual(row["session_id"], "ses_abc123")
+        self.assertEqual(row["roles"], ["Developer", "QA"])
+        self.assertEqual(row["launch_args"], "--auto-approve")
+        self.assertEqual(row["permission_mode"], "bypassPermissions")
+        self.assertEqual(row["cwd"], "E:\\WorkSpace\\github\\herdr-phalanx")
+        self.assertEqual(row["registered_by"], "supervisor")
+        self.assertEqual(row["agent_version"], "omp v18.0.4")
+        self.assertEqual(row["herdr_version"], "herdr 0.9.0")
+        self.assertEqual(row["messages_claimed"], 0)
+        self.assertEqual(row["messages_completed"], 0)
+        self.assertEqual(row["messages_failed"], 0)
+
+    def test_worker_register_defaults(self):
+        row = _run_cli([
+            "worker-register", "--worker-id", "defaults-w1", "--agent-kind", "omp",
+        ], self.env)
+        self.assertIsNone(row.get("workspace_id"))
+        self.assertIsNone(row.get("session_id"))
+        self.assertEqual(row.get("roles"), [])
+        self.assertEqual(row["registered_by"], "operator")
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["messages_claimed"], 0)
+        self.assertEqual(row["messages_completed"], 0)
+        self.assertEqual(row["messages_failed"], 0)
+
+
+class TestWorkerMigration(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="agent-bus-mig-"))
+        self.db_path = self.tmpdir / "bus.db"
+        self.artifacts = self.tmpdir / "runs"
+        self.env = os.environ.copy()
+        self.env["AGENT_BUS_DB"] = str(self.db_path)
+        self.env["AGENT_BUS_ARTIFACTS"] = str(self.artifacts)
+        os.environ["AGENT_BUS_DB"] = str(self.db_path)
+        os.environ["AGENT_BUS_ARTIFACTS"] = str(self.artifacts)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_migrate_old_schema_adds_new_columns(self):
+        """A legacy bus_workers with only the original 9 columns should be
+        migrated forward by init-database without losing data."""
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("""CREATE TABLE bus_workers (
+            worker_id TEXT PRIMARY KEY, agent_kind TEXT NOT NULL,
+            profile TEXT, agent_name TEXT, pane_id TEXT, tab_id TEXT,
+            status TEXT NOT NULL DEFAULT 'ready',
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            metadata TEXT
+        )""")
+        conn.execute(
+            "INSERT INTO bus_workers (worker_id, agent_kind, agent_name) VALUES (?,?,?)",
+            ("legacy-w1", "omp", "legacy-omp"),
+        )
+        conn.commit()
+        conn.close()
+
+        _run_cli(["init-db"], self.env)
+
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(bus_workers)")}
+        row = conn.execute("SELECT * FROM bus_workers WHERE worker_id=?",
+                           ("legacy-w1",)).fetchone()
+        conn.close()
+
+        for expected in (
+            "workspace_id", "session_id", "roles", "launch_args",
+            "permission_mode", "cwd", "registered_by", "agent_version",
+            "herdr_version", "messages_claimed", "messages_completed",
+            "messages_failed",
+        ):
+            self.assertIn(expected, cols)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["worker_id"], "legacy-w1")
+
 
 class TestEnqueue(_BusTestCase):
     def test_enqueue_requires_instruction(self):

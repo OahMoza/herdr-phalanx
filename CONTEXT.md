@@ -38,6 +38,7 @@ Agent Bus is the independent local N:N communication infrastructure introduced b
 - **Late result**: a `complete` / `fail` / `cancelled` call arriving after the lease expired and `reap` moved the Message on. Recorded as an Event; never overwrites the active lease's state.
 - **Bus CLI**: the Python standard-library SQLite CLI that exposes the Bus surface. Sole path that mutates Message state.
 - **Trust boundary**: single-machine local. `worker_id` is an audit identifier, not a cryptographic identity. `agent-bus.db` filesystem permissions are the operational trust boundary.
+- **Bus Worker record**: a row in `bus_workers` that captures a TUI Agent's identity and capabilities for Bus consumption. Records `worker_id`, `agent_kind`, `profile`, `agent_name`, `workspace_id`, `pane_id`, `tab_id`, `session_id`, `roles`, `launch_args`, `permission_mode`, `cwd`, `registered_by`, `agent_version`, `herdr_version`, and running statistics (`messages_claimed`, `messages_completed`, `messages_failed`). Extended in v0.7.4 to carry role, session, launch context, and version metadata for audit and debugging.
 
 ## Agent Bus implementation layers (ADR 0003)
 

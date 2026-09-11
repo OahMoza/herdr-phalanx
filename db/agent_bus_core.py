@@ -250,11 +250,45 @@ class AgentBus:
         conn = self._db_open()
         try:
             conn.executescript(schema_sql)
-            migration = self._migrate_callback_registry(conn)
+            cb_migration = self._migrate_callback_registry(conn)
+            worker_migration = self._migrate_bus_workers(conn)
             conn.commit()
         finally:
             conn.close()
-        return {"database": str(path), "migration": migration}
+        return {
+            "database": str(path),
+            "migration": {
+                "callbacks": cb_migration,
+                "workers": worker_migration,
+            },
+        }
+
+    def _migrate_bus_workers(self, conn: sqlite3.Connection) -> dict:
+        """Add new columns to `bus_workers` if missing from legacy databases."""
+
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(bus_workers)")}
+        applied: list[str] = []
+        new_columns = [
+            ("workspace_id", "TEXT"),
+            ("session_id", "TEXT"),
+            ("roles", "TEXT"),
+            ("launch_args", "TEXT"),
+            ("permission_mode", "TEXT"),
+            ("cwd", "TEXT"),
+            ("registered_by", "TEXT DEFAULT 'operator'"),
+            ("agent_version", "TEXT"),
+            ("herdr_version", "TEXT"),
+            ("messages_claimed", "INTEGER NOT NULL DEFAULT 0"),
+            ("messages_completed", "INTEGER NOT NULL DEFAULT 0"),
+            ("messages_failed", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        for col_name, col_type in new_columns:
+            if col_name not in cols:
+                conn.execute(
+                    f"ALTER TABLE bus_workers ADD COLUMN {col_name} {col_type}"
+                )
+                applied.append(f"add_{col_name}")
+        return {"applied": applied}
 
     def _migrate_callback_registry(self, conn: sqlite3.Connection) -> dict:
         """Add `executable` / `arguments_json` columns to `bus_callbacks` if
@@ -343,7 +377,7 @@ class AgentBus:
     @staticmethod
     def _row_to_message(row) -> dict:
         d = dict(row)
-        for key in ("payload", "result", "callback_payload"):
+        for key in ("payload", "result", "callback_payload", "roles"):
             if key in d and isinstance(d[key], str) and d[key]:
                 try:
                     d[key] = json.loads(d[key])
@@ -453,30 +487,53 @@ class AgentBus:
         agent_kind: str,
         profile: Optional[str] = None,
         agent_name: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         pane_id: Optional[str] = None,
         tab_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        roles: Optional[list[str]] = None,
+        launch_args: Optional[str] = None,
+        permission_mode: Optional[str] = None,
+        cwd: Optional[str] = None,
+        registered_by: Optional[str] = None,
+        agent_version: Optional[str] = None,
+        herdr_version: Optional[str] = None,
         status: str = "ready",
         metadata: Optional[dict] = None,
         actor_id: Optional[str] = None,
     ) -> dict:
         metadata_json = _to_json(metadata or {})
+        roles_json = _to_json(roles or [])
 
         def action(conn):
             conn.execute(
                 """INSERT INTO bus_workers
-                   (worker_id, agent_kind, profile, agent_name, pane_id, tab_id, status,
+                   (worker_id, agent_kind, profile, agent_name, workspace_id,
+                    pane_id, tab_id, session_id, roles, launch_args, permission_mode,
+                    cwd, registered_by, agent_version, herdr_version, status,
                     metadata, last_seen_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(worker_id) DO UPDATE SET
                      agent_kind=excluded.agent_kind,
                      profile=excluded.profile,
                      agent_name=excluded.agent_name,
+                     workspace_id=excluded.workspace_id,
                      pane_id=excluded.pane_id,
                      tab_id=excluded.tab_id,
+                     session_id=excluded.session_id,
+                     roles=excluded.roles,
+                     launch_args=excluded.launch_args,
+                     permission_mode=excluded.permission_mode,
+                     cwd=excluded.cwd,
+                     registered_by=excluded.registered_by,
+                     agent_version=excluded.agent_version,
+                     herdr_version=excluded.herdr_version,
                      status=excluded.status,
                      metadata=excluded.metadata,
                      last_seen_at=excluded.last_seen_at""",
-                (worker_id, agent_kind, profile, agent_name, pane_id, tab_id,
+                (worker_id, agent_kind, profile, agent_name, workspace_id,
+                 pane_id, tab_id, session_id, roles_json, launch_args, permission_mode,
+                 cwd, registered_by or "operator", agent_version, herdr_version,
                  status, metadata_json, self._clock()),
             )
             self._log(conn, "worker_registered", actor_id=actor_id or worker_id,
