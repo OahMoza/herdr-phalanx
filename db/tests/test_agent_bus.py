@@ -789,6 +789,112 @@ class TestCallback(_BusTestCase):
         self.assertEqual(row["status"], "succeeded")
 
 
+class TestWorkerStats(_BusTestCase):
+    """Tests for automatic worker statistic incrementation."""
+
+    def test_claim_increments_messages_claimed(self):
+        self._setup_route()
+        self._enqueue("c1")
+        _run_cli(["worker-register", "--worker-id", "stat-w1", "--agent-kind", "omp"],
+                 self.env)
+
+        # worker_loop_once needs a commander_runner and prompt_builder.
+        class _MockRunner:
+            def run_agent_prompt(self, agent_name, prompt, timeout):
+                class _Result:
+                    ok = True
+                return _Result()
+
+        bus_instance = bus._bus()
+        result = bus_instance.worker_loop_once(
+            worker_id="stat-w1",
+            agent_kind="omp",
+            profile=None,
+            agent_name="stat-agent",
+            commander_runner=_MockRunner(),
+            prompt_builder=lambda msg: "test prompt",
+        )
+        self.assertTrue(result["claimed"])
+
+        conn = bus._connect()
+        row = conn.execute(
+            "SELECT messages_claimed FROM bus_workers WHERE worker_id=?", ("stat-w1",)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["messages_claimed"], 1)
+
+    def test_complete_increments_messages_completed(self):
+        self._setup_route()
+        self._enqueue("c1")
+        _run_cli(["worker-register", "--worker-id", "stat-w2", "--agent-kind", "omp"],
+                 self.env)
+        claimed = self._claim(worker_id="stat-w2")
+        report = self._write_report()
+        result = self._write_result({"outcome": "succeeded", "summary": "ok"})
+        _run_cli(["complete", "--id", claimed["id"], "--worker-id", "stat-w2",
+                  "--lease", claimed["lease_id"],
+                  "--result-file", str(result),
+                  "--raw-report-file", str(report)], self.env)
+
+        conn = bus._connect()
+        row = conn.execute(
+            "SELECT messages_completed FROM bus_workers WHERE worker_id=?", ("stat-w2",)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["messages_completed"], 1)
+
+    def test_fail_increments_messages_failed(self):
+        self._setup_route()
+        self._enqueue("c1")
+        _run_cli(["worker-register", "--worker-id", "stat-w3", "--agent-kind", "omp"],
+                 self.env)
+        claimed = self._claim(worker_id="stat-w3")
+        report = self._write_report("boom\n")
+        _run_cli(["fail", "--id", claimed["id"], "--worker-id", "stat-w3",
+                  "--lease", claimed["lease_id"], "--reason", "boom",
+                  "--raw-report-file", str(report)], self.env)
+
+        conn = bus._connect()
+        row = conn.execute(
+            "SELECT messages_failed FROM bus_workers WHERE worker_id=?", ("stat-w3",)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["messages_failed"], 1)
+
+    def test_stats_default_to_zero_for_new_worker(self):
+        row = _run_cli(["worker-register", "--worker-id", "stat-w4",
+                        "--agent-kind", "omp"], self.env)
+        self.assertEqual(row["messages_claimed"], 0)
+        self.assertEqual(row["messages_completed"], 0)
+        self.assertEqual(row["messages_failed"], 0)
+
+    def test_stat_increment_is_idempotent_runs_atomically(self):
+        """Verify the increment uses ``UPDATE … SET col = col + 1`` (not
+        ``SET col = 1``), so concurrent runs never clobber each other."""
+        _run_cli(["worker-register", "--worker-id", "stat-w5", "--agent-kind", "omp"],
+                 self.env)
+
+        # Seed a known non-zero value via direct SQL.
+        conn = bus._connect()
+        conn.execute("UPDATE bus_workers SET messages_completed = 5 WHERE worker_id=?",
+                    ("stat-w5",))
+        conn.commit()
+        conn.close()
+
+        # Increment via the Core's private helper.
+        bus_instance = bus._bus()
+        def _bump(conn):
+            bus_instance._increment_worker_stat(conn, "stat-w5", "messages_completed")
+        bus_instance._writer(_bump)
+
+        conn = bus._connect()
+        row = conn.execute(
+            "SELECT messages_completed FROM bus_workers WHERE worker_id=?", ("stat-w5",)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["messages_completed"], 6)
+
+
 class TestSQLiteBusyRetry(_BusTestCase):
     def test_writer_succeeds_under_wal(self):
         # Sanity check: an insert under WAL works in a follow-up connection.
