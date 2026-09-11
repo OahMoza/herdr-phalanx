@@ -93,11 +93,17 @@ CREATE TABLE IF NOT EXISTS bus_workers (
 
 -- ------------------------------------------------------------
 -- bus_callbacks: Operator 受控注册表
+-- `executable` + `arguments_json` are the production delivery surface.
+-- `command_template` + `kind` are retained for forward-compatibility and
+-- migration bookkeeping; legacy rows are disabled by `init-db` so they
+-- never re-execute as shell strings.
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS bus_callbacks (
   name              TEXT PRIMARY KEY,
   kind              TEXT NOT NULL,
-  command_template  TEXT NOT NULL,
+  command_template  TEXT NOT NULL DEFAULT '',
+  executable        TEXT,
+  arguments_json    TEXT,
   enabled           INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))

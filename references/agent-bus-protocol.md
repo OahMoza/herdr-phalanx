@@ -1,8 +1,17 @@
 # Agent Bus Protocol
 
 This document is the single source of truth for the Agent Bus CLI surface,
-the Message state machine, and the lease contract. The CLI is implemented in
-`db/agent_bus.py`; the schema is in `db/agent_bus_schema.sql`.
+the Message state machine, and the lease contract. The implementation is
+split across three layers (see ADR 0003):
+
+| Layer       | File                       | Responsibility                                 |
+| ----------- | -------------------------- | ---------------------------------------------- |
+| Core        | `db/agent_bus_core.py`     | lease state machine, persistence, artifacts    |
+| Herdr Adapter | `db/herdr_adapter.py`    | lease prompt template, Herdr TUI runner         |
+| CLI adapter | `db/agent_bus.py`          | argparse, JSON I/O, error/exit mapping         |
+
+The schema lives in `db/agent_bus_schema.sql`. The Core owns all
+business logic; the CLI adapter is a thin shell over it.
 
 ## Concepts
 
@@ -252,15 +261,61 @@ Results are routed by `caller_id`:
 
 ## Callback delivery
 
-- A callback is identified by `callback_name` only; the command template
-  lives in `bus_callbacks` and is Operator-managed.
-- A successful `complete` with a registered `callback_name` creates a
-  `callback_deliveries` row in `pending`.
-- `callback-deliver --once|--drain` runs the command template through
-  `subprocess.run` with exponential backoff on failure (5 / 15 / 60 / 300 s).
-  After exhausting retries, the delivery moves to `dead`.
-- Callback failure never reverts the Message. Producers always retain
-  pull-based access.
+A callback is identified by `callback_name` only; the invocation lives in
+`bus_callbacks` and is Operator-managed. Two registration shapes:
+
+| Shape           | CLI flags                                | Runner                       |
+| --------------- | ---------------------------------------- | ---------------------------- |
+| Executable      | `--executable PATH --arguments '[]'`     | `SubprocessCommandRunner` (`shell=False`) |
+| Legacy template | `--kind command --command-template "..."`| `ShellTemplateCommandRunner` (`shell=True`) |
+
+A successful `complete` with a registered `callback_name` (and a
+non-null `executable` or `command_template`) creates a
+`callback_deliveries` row in `pending`.
+
+`callback-deliver --once` (or `--drain`) walks the pending queue. The Core
+chooses the runner from the row shape and the callbacks never enter the
+OS shell as a single command string in the executable path. Stdout and
+stderr land in `runs/agent-bus/<message-id>/callback-<delivery-id>/`.
+
+Backoff is exponential (5 / 15 / 60 / 300 s). After exhausting retries
+the delivery moves to `dead`. Callback failure never reverts the
+Message — Producers always retain pull-based access.
+
+## Herdr Adapter and the worker-loop subcommand
+
+The CLI's `worker-loop` subcommand is the single integration point
+between the Core and the Herdr TUI Worker:
+
+```text
+python db/agent_bus.py worker-loop \
+    --worker-id   <id> \
+    --agent-kind  <kind> \
+    --profile     <profile>  # optional
+    --agent-name  <herdr agent name> \
+    --pane-id     <pane> \
+    --tab-id      <tab> \
+    --lease-seconds 300 \
+    [--herdr-bin PATH]
+```
+
+1. The Core claims the next pending Message for the route
+   (`agent_kind + profile`) inside one `BEGIN IMMEDIATE` transaction.
+2. The Herdr Adapter (`db/herdr_adapter.py`) builds the restricted
+   lease prompt. The prompt header lists exactly four allowed commands
+   (`heartbeat-message`, `complete`, `fail`, `cancelled`) and explicitly
+   forbids `enqueue`, `claim`, `route-set`, `route-delete`,
+   `worker-register`.
+3. The Herdr Adapter calls `HerdrCommanderRunner.run_agent_prompt`,
+   which is the only place that shells out to Herdr. It uses
+   `subprocess.run([herdr_bin, "agent", "prompt", --agent, --workspace-pane, --prompt, --timeout, --no-block], shell=False)`.
+4. On success the Core immediately heartbeats the lease so the prompt
+   round-trip lag does not eat into the lease window.
+
+Failure of the runner leaves the Message in `leased`; the Reaper will
+reclaim it when `lease_until` expires. The new `agent_bus_supervisor.ps1`
+and `worker_loop.ps1` PowerShell templates are thin shims over
+`worker-loop` and no longer assemble prompts inline.
 
 ## TUI markers
 
