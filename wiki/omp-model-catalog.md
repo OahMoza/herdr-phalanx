@@ -116,24 +116,34 @@ python db/agent_bus.py enqueue --caller smoke --agent-kind omp --profile heavy -
 
 ## Shell 兼容性
 
-**状态**：Git Bash 上有兼容问题，WSL bash 正常。
+**状态**：OMP ≤ v18.0.4 在 Windows 上有已确认的 bug（[PR #1080](https://github.com/can1357/oh-my-pi/pull/1080) 已修复，需升级）。
 
 ### 问题
 
-OMP 在 Windows Git Bash 上生成 **CMD 语法**（`set VAR=...`、`%VAR%`、`if exist`），但实际 shell 是 bash。导致变量展开失败、路径转义错误。
+OMP 使用 `executeBash()` 通过 **brush-core**（嵌入式 Rust bash 解释器）执行所有命令。Brush 对命令字符串应用 POSIX 变量展开，包括双引号内的 `$env`。
+
+当 PowerShell 命令 `Write-Host $env:SystemRoot` 通过 brush 时：
+- `$env` 被当作 bash 变量（未定义）→ 展开为空
+- 结果变成 `Write-Host :SystemRoot`（空 `$env` + 冒号 + 字面量）
 
 **对比**：Pi 在相同环境下生成正确的 bash 语法（`${VAR}`），工作正常。
 
 ### 根因
 
-OMP 的 shell tool 在 Git Bash 上错误地检测为 CMD 环境。这是 OMP 的 bug。
+`executeBash()` 无条件通过 brush 路由所有命令。`getShellConfig()` 返回的 shell 路径仅影响会话键计算和快照检测，不影响实际执行。
+
+### 修复（PR #1080，已合并）
+
+1. **Rust 层修复**：brush 会话创建时定义 `env=$env` 为非导出变量。POSIX 展开 `$env:NAME` 解析为字面量 `$env:NAME`，PowerShell 引用得以保留。
+2. **Windows 默认 shell**：分辨率顺序改为 `pwsh.exe` → `powershell.exe` → Git Bash → `bash.exe`。
+3. **直接生成路径**：非 bash shell 使用 `executeViaDirectSpawn()` 跳过 brush。
 
 ### 解决方案
 
 | 方案 | 操作 | 适用场景 |
 |---|---|---|
-| **A. 用 WSL bash** | `shellPath: "/bin/bash"`（WSL 内） | WSL 用户，和 Pi 一致 |
-| **B. 用 PowerShell** | `shellPath: "<detect-shell.ps1 输出>"` | Windows 原生，需 restart |
-| **C. 等 OMP 修复** | 不动 | 不推荐 |
+| **A. 升级 OMP** | `omp update` 到包含 PR #1080 的版本 | **推荐** |
+| **B. 用 PowerShell** | `shellPath: "<detect-shell.ps1 输出>"` | 当前版本 workaround |
+| **C. 用 WSL bash** | `shellPath: "/bin/bash"`（WSL 内） | WSL 用户 |
 
 **注意**：修改后需要 **restart OMP agent** 才能生效。
