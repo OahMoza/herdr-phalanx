@@ -1,69 +1,167 @@
-# Phalanx ↔ Agent Bus Bridge (design only)
+# Phalanx ↔ Agent Bus Bridge
 
-The Agent Bus PRD (#22) does **not** implement a bridge between Phalanx Run /
-Task / Dispatch and the Agent Bus. This document captures the intended design
-so the next phase has a written contract.
+Implements a bidirectional projection between the Phalanx orchestration DB
+(runs / tasks / dispatches) and the Agent Bus (messages / routes / workers).
 
-## Goal
+## Module
 
-Make Phalanx Task creation enqueue an Agent Bus Message, and Bus Message
-completion project back into Phalanx Dispatch / Task state, without changing
-the single-Coordinator ownership of an active Run.
+`db/phalanx_bus_bridge.py` — standalone, no modifications to either Core.
 
-## Boundaries preserved
+## Data flow
 
-- Phalanx Run / Task / Dispatch stay exactly as they are. The Coordinator
-  remains the sole writer for an active Run.
-- Agent Bus Messages stay exactly as they are. `correlation_id` (Message id)
-  is a separate namespace from Phalanx `dispatch_id`.
+```
+Phalanx Coordinator          Bridge                    Agent Bus
+ ───────────────          ──────────                  ──────────
+     │                        │                           │
+     │  task-add              │                           │
+     │  (execution_mode)      │                           │
+     │───────────────────────>│                           │
+     │                        │                           │
+     │  dispatch-start        │                           │
+     │───────────────────────>│                           │
+     │                        │  bridge_task_to_message() │
+     │                        │──────────────────────────>│
+     │                        │   enqueue()               │
+     │                        │<──────────────────────────│
+     │                        │   msg_id                  │
+     │                        │                           │
+     │                        │  INSERT bus_message_map   │
+     │                        │  (task_id, dispatch_id,   │
+     │                        │   message_id, mode)       │
+     │                        │                           │
+     │                        │              worker_loop_once()
+     │                        │<──────────────────────────│
+     │                        │   claim → deliver →       │
+     │                        │   complete/fail           │
+     │                        │                           │
+     │                        │  on_message_complete()    │
+     │                        │  (driven by poll or       │
+     │                        │   callback)               │
+     │                        │                           │
+     │  UPDATE dispatches     │                           │
+     │  UPDATE tasks          │                           │
+     │  INSERT events         │                           │
+     │<───────────────────────│                           │
+```
 
-## Mapping (sketch)
+## Field mapping
 
-- A Phalanx Task `task_xxx` is mapped 1:N to Bus Messages `msg_yyy` whenever
-  the Coordinator decides to dispatch it through the bus instead of a direct
-  managed Worker.
-- The bridge records `task_xxx -> msg_yyy` in a small `bus_message_map` table
-  inside the Phalanx DB. The bridge owns this table; the Coordinator does not.
-- The bus message's `caller_id` is the Phalanx Coordinator identity
-  (`phalanx-bridge`), so the bridge can pull results back.
-- The bus message's `worker_id` recorded by the bus is the live TUI Agent
-  identity, which is recorded into the Dispatch's `agent_name` / `agent_kind`
-  when the bridge completes the Dispatch.
+### Task → Message (projection)
 
-## Required Coordinator changes
+| Phalanx `tasks` field      | Bus `bus_messages` payload field              | Notes                                  |
+|----------------------------|-----------------------------------------------|----------------------------------------|
+| `tasks.spec`               | `payload.instruction`                         | Agent prompt body                      |
+| `tasks.id`                 | `payload.bridge.task_id`                      | Correlation                            |
+| `tasks.run_id`             | `payload.bridge.run_id`                       | Audit trail                            |
+| `tasks.preferred_agent`    | `bus_messages.agent_kind`                     | Route selection                        |
+| `tasks.execution_mode`     | `payload.bridge.mode`                         | Envelope shape switch                  |
+| `tasks.assigned_role`      | `payload.context.assigned_role`               | Managed only                           |
+| *(dispatch_id)*            | `payload.bridge.dispatch_id`                  | Managed only                           |
+| *(hardcoded)*              | `bus_messages.caller_id = "phalanx-bridge"`   | Result-pull identity                   |
+| *(hardcoded)*              | `bus_messages.max_attempts = 3`               | Override per-call                      |
 
-- The Coordinator acquires a one-time option `-DispatchBackend bus`. When set,
-  `task-claim` invokes the bridge to enqueue an Agent Bus Message instead of
-  writing the Dispatch row directly.
-- After enqueue, the Coordinator polls `result-list --caller
-  phalanx-bridge --after-event <last>` (or runs the explicit supervisor) and
-  completes the Dispatch via `dispatch-complete-from-output` when a Message
-  result returns.
-- Bus Dispatch state remains in the bus, not in Phalanx, until the bridge
-  promotes the result. The Dispatch row is created with status `running`,
-  `worker_name = <bus worker>`, and `agent_kind = <bus worker kind>`.
+### Message → Dispatch (promotion)
 
-## Required Bus changes
+| Bus `bus_messages` result  | Phalanx `dispatches` field                    |
+|----------------------------|-----------------------------------------------|
+| `result.outcome`           | `dispatches.outcome`, `dispatches.status`     |
+| `result.summary`           | `dispatches.summary`                          |
+| `result.files_modified`    | `dispatches.files_modified`                   |
+| *(terminal timestamp)*     | `dispatches.completed_at`                     |
 
-- None. The bus exposes everything the bridge needs as it stands today:
-  `enqueue`, `result-list`, `result-get`, `cancel`, `requeue`.
+### Dispatch status mapping
+
+| Bus outcome     | Dispatch status | Task status (success) | Task status (failure) |
+|-----------------|-----------------|-----------------------|-----------------------|
+| `succeeded`     | `completed`     | `completed`           | —                     |
+| `failed`        | `failed`        | —                     | `pending` or `failed`*|
+
+\* Task stays `pending` when `retry_count < max_retries`; otherwise `failed`.
+
+## Execution-mode envelope differences
+
+### managed
+
+```json
+{
+  "instruction": "<tasks.spec>",
+  "bridge":   { "source": "phalanx", "task_id": "...", "dispatch_id": "...", "run_id": "...", "mode": "managed" },
+  "context":  { "assigned_role": "Developer", "preferred_agent": "omp" },
+  "constraints": { "require_task_complete": true }
+}
+```
+
+The Worker is expected to emit a `TASK_COMPLETE` marker so the Bridge can
+parse structured results.
+
+### raw-pane
+
+```json
+{
+  "instruction": "<tasks.spec>",
+  "bridge": { "source": "phalanx", "task_id": "...", "run_id": "...", "mode": "raw-pane" }
+}
+```
+
+No `TASK_COMPLETE` contract; the Bridge treats whatever the agent returns
+as the result.
+
+## Conflict handling
+
+### Dispatch already terminal
+
+If `on_message_complete` finds the target Dispatch in a terminal status
+(`completed`, `failed`, `blocked`, `abandoned`), it **refuses to overwrite**
+and returns `{"updated": false, "reason": "dispatch already terminal"}`.
+This prevents a late Bus result from clobbering a state-machine transition
+the Coordinator already made.
+
+### Message has no mapping
+
+If the Bus Message id is not found in `bus_message_map`, the Bridge returns
+`{"updated": false, "reason": "no bus_message_map entry"}`.  This is a
+no-op — the Message was not projected by the Bridge.
+
+## Idempotency
+
+`bridge_task_to_message` checks `bus_message_map` before every enqueue:
+
+1. Look up the most recent mapping row for the Task id.
+2. If a mapping exists **and** the corresponding Bus Message is still live
+   (status not in `succeeded`, `dead`, `cancelled`), return the existing
+   mapping without enqueueing again.
+3. If the mapping's Message is terminal (or missing), fall through and
+   enqueue a fresh Message.
+
+This guarantees at-most-one live Message per Task, even if the Coordinator
+retries the projection after a crash.
+
+## Transaction boundaries
+
+- **Phalanx DB**: the bridge opens its own connection, runs the mapping
+  INSERT / Dispatch UPDATE / Task UPDATE / Event INSERT in a single
+  transaction, and commits.  The Coordinator's transaction is independent.
+- **Agent Bus DB**: the bridge delegates to `AgentBus.enqueue()`, which
+  manages its own `BEGIN IMMEDIATE` transaction.
+- **No cross-DB transaction**: the two databases are never bound together.
+  If the Phalanx commit fails after the Bus enqueue succeeded, the Bus
+  Message will simply never be pulled (it remains `pending` until reaped).
 
 ## Safety rules
 
-- The bridge is the only writer of `bus_message_map`. Phalanx Coordinator
-  reads it for traceability but does not mutate it.
-- Bridge runs inside the Phalanx Coordinator process and uses the same
-  Coordinator identity as the bus caller.
-- Bus completion does not directly write Phalanx `dispatches`. It goes
-  through `dispatch-complete-from-output` so the Phalanx state machine stays
-  consistent.
-- All evidence from the bus (raw reports, attempt artifacts, callback
-  deliveries) remains in the bus. The bridge only records the structured
+- The bridge is the **only** writer of `bus_message_map`.  The Coordinator
+  may read it for traceability but never mutates it.
+- The bridge never writes `bus_messages` rows directly — it always goes
+  through `AgentBus.enqueue()`.
+- The bridge never writes `dispatches` rows directly — it only UPDATEs
+  existing rows through the documented status mapping.
+- All Bus-side evidence (raw reports, attempt artifacts, callback
+  deliveries) stays in the Bus.  The Bridge only promotes the structured
   result into Phalanx.
 
-## Out of scope here
+## Out of scope
 
-- Implementation.
-- A reverse bridge (a Phalanx Task triggered by a bus event without a
+- A reverse bridge (a Phalanx Task triggered by a Bus event without a
   Coordinator present).
 - Multi-Coordinator arbitration for the same Run.
+- Automatic retry of failed Bus Messages (handled by the Bus reaper).
