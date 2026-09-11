@@ -1,0 +1,18 @@
+TUI Worker Report
+==================
+Message ID: msg_176141c53a
+Lease ID: lease_CJ3l2pLUUtkX433uAW6td9HQhcsRGK5c
+Worker ID: tui_worker_pi
+Agent Kind: pi
+Attempt: 1
+
+Actions Taken:
+1. Initialized Agent Bus database
+2. Registered route for agent-kind=pi
+3. Registered worker tui_worker_pi
+4. Enqueued smoke test message
+5. Claimed message with lease
+6. Completed message with result
+
+Result: SUCCESS
+Summary: All bus CLI operations completed successfully.
