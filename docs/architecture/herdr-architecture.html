@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Herdr Phalanx + Agent Bus · Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,300;0,400;0,500;0,700;1,400&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0b1019;
+  --paper: #131a26;
+  --paper-2: #1c2533;
+  --line: #2a3548;
+  --text: #e6edf3;
+  --muted: #7d8590;
+  --dim: #545d68;
+  --phalanx: #d4a574;
+  --phalanx-dim: #8a6a48;
+  --bus: #5eead4;
+  --bus-dim: #3a8a7e;
+  --restricted: #f87171;
+  --allowed: #4ade80;
+  --warning: #fbbf24;
+  --shadow: 0 4px 24px rgba(0,0,0,.35);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+body {
+  font-family: 'Inter', -apple-system, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; text-decoration: none; }
+
+/* ── Nav ── */
+nav {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center; gap: 24px;
+  padding: 16px 32px;
+  background: rgba(11,16,25,.92);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+nav .brand {
+  font-family: 'Newsreader', serif;
+  font-weight: 700; font-size: 18px;
+  color: var(--text);
+  letter-spacing: -.01em;
+}
+nav .brand span { color: var(--bus); }
+nav .links { display: flex; gap: 20px; margin-left: auto; }
+nav .links a {
+  font-size: 13px; font-weight: 500;
+  color: var(--muted);
+  padding: 4px 0;
+  border-bottom: 1px solid transparent;
+  transition: all .2s;
+}
+nav .links a:hover { color: var(--text); border-bottom-color: var(--bus); }
+
+/* ── Hero ── */
+.hero {
+  min-height: 92vh;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center;
+  padding: 80px 32px;
+  background:
+    radial-gradient(ellipse 80% 60% at 20% 50%, rgba(212,165,116,.06) 0%, transparent 60%),
+    radial-gradient(ellipse 80% 60% at 80% 50%, rgba(94,234,212,.06) 0%, transparent 60%),
+    var(--bg);
+  position: relative; overflow: hidden;
+}
+.hero::before {
+  content: '';
+  position: absolute; inset: 0;
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 80px 80px;
+  opacity: .15;
+  mask-image: radial-gradient(ellipse 70% 70% at 50% 50%, black 20%, transparent 70%);
+}
+.hero > * { position: relative; z-index: 1; }
+.hero h1 {
+  font-family: 'Newsreader', serif;
+  font-size: clamp(40px, 6vw, 72px);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -.02em;
+  margin-bottom: 24px;
+}
+.hero h1 .accent-ph { color: var(--phalanx); }
+.hero h1 .accent-bus { color: var(--bus); }
+.hero .sub {
+  font-size: clamp(16px, 1.8vw, 20px);
+  color: var(--muted);
+  max-width: 680px;
+  margin-bottom: 48px;
+  line-height: 1.6;
+}
+.hero .pillars {
+  display: flex; gap: 24px; flex-wrap: wrap;
+  justify-content: center;
+}
+.pillar {
+  flex: 1; min-width: 280px; max-width: 380px;
+  padding: 32px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  text-align: left;
+  transition: transform .2s, box-shadow .2s;
+}
+.pillar:hover { transform: translateY(-4px); box-shadow: var(--shadow); }
+.pillar h3 {
+  font-family: 'Newsreader', serif;
+  font-size: 22px; font-weight: 600;
+  margin-bottom: 8px;
+}
+.pillar.phalanx h3 { color: var(--phalanx); }
+.pillar.bus h3 { color: var(--bus); }
+.pillar p {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.pillar .tag {
+  display: inline-block;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+  padding: 3px 10px; border-radius: 6px;
+  margin-bottom: 16px;
+}
+.pillar.phalanx .tag { background: rgba(212,165,116,.15); color: var(--phalanx); }
+.pillar.bus .tag { background: rgba(94,234,212,.15); color: var(--bus); }
+
+/* ── Sections ── */
+section {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 100px 32px;
+}
+section + section { padding-top: 0; }
+.section-label {
+  font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--bus);
+  margin-bottom: 16px;
+}
+section h2 {
+  font-family: 'Newsreader', serif;
+  font-size: clamp(30px, 4vw, 44px);
+  font-weight: 700;
+  letter-spacing: -.02em;
+  margin-bottom: 20px;
+  line-height: 1.2;
+}
+section h2 .accent { color: var(--phalanx); }
+section .lead {
+  font-size: 17px;
+  color: var(--muted);
+  max-width: 720px;
+  margin-bottom: 48px;
+  line-height: 1.7;
+}
+
+/* ── Cards & Grids ── */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  margin-top: 40px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  margin-top: 40px;
+}
+.card {
+  padding: 28px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+.card h4 {
+  font-family: 'Newsreader', serif;
+  font-size: 18px; font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+.card p, .card li {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.card ul { list-style: none; padding: 0; }
+.card ul li { padding: 4px 0; }
+.card ul li::before {
+  content: '→'; margin-right: 8px;
+  color: var(--dim); font-weight: 500;
+}
+
+/* ── Code / CLI blocks ── */
+.cli-block {
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px 24px;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #c9d1d9;
+  overflow-x: auto;
+  margin: 16px 0;
+  white-space: pre;
+}
+.cli-block .cmd { color: var(--bus); font-weight: 500; }
+.cli-block .flag { color: #79c0ff; }
+.cli-block .str { color: #a5d6ff; }
+.cli-block .comment { color: #6e7681; }
+.cli-block .hl { color: var(--phalanx); font-weight: 600; }
+
+/* ── Schema table ── */
+.schema-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 20px 0;
+}
+.schema-table th, .schema-table td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+schema-table th {
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted);
+  background: rgba(255,255,255,.02);
+}
+.schema-table td {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text);
+}
+.schema-table .pk { color: var(--warning); }
+.schema-table .fk { color: var(--bus); }
+.schema-table .col-name { color: #c9d1d9; }
+.schema-table .col-type { color: var(--muted); font-size: 11px; }
+
+/* ── Timeline ── */
+.timeline {
+  position: relative;
+  margin: 32px 0;
+  padding-left: 32px;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 7px; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--line);
+}
+.timeline-item {
+  position: relative;
+  margin-bottom: 24px;
+  padding-left: 8px;
+}
+.timeline-item::before {
+  content: '';
+  position: absolute;
+  left: -29px; top: 6px;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 2px solid var(--bus);
+}
+.timeline-item.done::before { background: var(--allowed); border-color: var(--allowed); }
+.timeline-item .time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+.timeline-item .evt {
+  font-size: 14px;
+  color: var(--text);
+  font-weight: 500;
+}
+.timeline-item .detail {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* ── Callouts ── */
+.callout {
+  padding: 20px 24px;
+  border-radius: 10px;
+  border-left: 4px solid;
+  margin: 20px 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.callout.info { border-color: var(--bus); background: rgba(94,234,212,.08); }
+.callout.info::before { content: '◆ '; color: var(--bus); font-weight: 600; }
+.callout.warn { border-color: var(--warning); background: rgba(251,191,36,.08); }
+.callout.warn::before { content: '▲ '; color: var(--warning); font-weight: 600; }
+.callout.rule { border-color: var(--restricted); background: rgba(248,113,113,.08); }
+.callout.rule::before { content: '⊘ '; color: var(--restricted); font-weight: 600; }
+.callout.ok { border-color: var(--allowed); background: rgba(74,222,128,.08); }
+.callout.ok::before { content: '✓ '; color: var(--allowed); font-weight: 600; }
+
+/* ── File tree ── */
+.tree {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 2;
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 24px;
+  margin: 20px 0;
+}
+.tree .dir { color: var(--bus); font-weight: 500; }
+.tree .file { color: #c9d1d9; }
+.tree .file-root { color: var(--phalanx); font-weight: 500; }
+.tree .note { color: var(--dim); font-style: italic; }
+
+/* ── Footer ── */
+footer {
+  text-align: center;
+  padding: 60px 32px;
+  color: var(--dim);
+  font-size: 13px;
+  border-top: 1px solid var(--line);
+  margin-top: 60px;
+}
+footer .badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 6px;
+  background: rgba(255,255,255,.05);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  margin: 0 4px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .hero .pillars { flex-direction: column; align-items: center; }
+  nav .links { display: none; }
+  section { padding: 60px 20px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ NAV ═══════════ -->
+<nav>
+  <div class="brand">Herdr <span>Phalanx</span> + <span>Bus</span></div>
+  <div class="links">
+    <a href="#two-halves">双库</a>
+    <a href="#phalanx">Phalanx</a>
+    <a href="#bus">Agent Bus</a>
+    <a href="#layers">三层</a>
+    <a href="#envelope">受限信封</a>
+    <a href="#smoke">真实 Pi</a>
+    <a href="#files">文件</a>
+  </div>
+</nav>
+
+<!-- ═══════════ HERO ═══════════ -->
+<div class="hero">
+  <h1>
+    <span class="accent-ph">Phalanx</span><br>
+    +<br>
+    <span class="accent-bus">Agent Bus</span>
+  </h1>
+  <p class="sub">
+    一台 Windows 机器 · 一个 Herdr 会话 · 两种写入契约<br>
+    单一 Coordinator 的 Run/Task/Dispatch 编排<br>
+    N:N 多写者 lease-based 队列
+  </p>
+  <div class="pillars">
+    <div class="pillar phalanx">
+      <div class="tag">phalanx.db · single-writer</div>
+      <h3>Phalanx</h3>
+      <p>一次 Run 一个 Coordinator。<br>claim → prompt → 等 → parse TASK_COMPLETE → complete。<br>Run 写者唯一，其它只读。</p>
+    </div>
+    <div class="pillar bus">
+      <div class="tag">agent-bus.db · multi-writer row-level</div>
+      <h3>Agent Bus</h3>
+      <p>多 Producer、多 Worker 竞争消费。<br>enqueue → claim → herdr agent prompt → heartbeat → complete。<br>lease 串行化多写者。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ SECTION 2: Two Halves ═══════════ -->
+<section id="two-halves">
+  <div class="section-label">01 · 根本分歧</div>
+  <h2>同一台机器，<span class="accent">两种写入契约</span></h2>
+  <p class="lead">两个 SQLite 数据库，各自独立。不共享连接，不共享事务，不共享写入者。它们唯一的"桥"是未来会建的 <code>references/agent-bus-phalanx-bridge.md</code> — 当前明确在 scope 之外。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <h4>🔒 Phalanx · 单写者 per Run</h4>
+      <ul>
+        <li>Run 表有 <code>coordinator_id</code></li>
+        <li>每次 write 校验 owner</li>
+        <li>claim Task + create Dispatch 一条 transaction</li>
+        <li>重复终态被拒绝（幂等）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>🔄 Bus · 多写者 row-level</h4>
+      <ul>
+        <li>没有 owner 概念</li>
+        <li>每行有 <code>lease_id</code></li>
+        <li>state-change 必须带完整 lease triple</li>
+        <li>lease 到期 → reaper 回收</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout info">
+    选择规则：需要可靠跟踪"谁派了哪次活、结果怎样" → Phalanx。<br>
+    只需要"把消息放到某类 agent 面前" → Agent Bus。
+  </div>
+</section>
+
+<!-- ═══════════ SECTION 3: Phalanx Detail ═══════════ -->
+<section id="phalanx">
+  <div class="section-label">02 · Phalanx 编排</div>
+  <h2>单一 Coordinator 的 <span class="accent">可靠执行闭环</span></h2>
+  <p class="lead">Run → Task → Dispatch → Event 四层模型 + capability observation + Gate 决策门。每条状态变更有解析的 <code>TASK_COMPLETE</code> 作为终态证据，<code>idle</code>/<code>done</code> 不算成功。</p>
+
+  <div class="cli-block"><span class="comment"># 一次完整的 Phalanx 生命周期（CLI 视角）</span>
+
+<span class="cmd">python db/phalanx_db.py</span> run-create --objective "修复登录" --workspace w9
+<span class="comment">→ run_id = run_c2db01d6</span>
+
+<span class="cmd">python db/phalanx_db.py</span> task-add --run run_c2db01d6 --spec "改登录接口" --role Developer
+<span class="comment">→ task_id = task_a1b2c3</span>
+
+<span class="cmd">python db/phalanx_db.py</span> task-claim --task task_a1b2c3 --coordinator hermes-main --kind omp --agent-name dev-1
+<span class="comment">→ dispatch created · attempts=1 · task=running</span>
+
+<span class="cmd">herdr agent prompt</span> dev-1 "<span class="hl">&lt;p&gt;</span> ... <span class="hl">&lt;work&gt;</span>"
+<span class="comment">→ herdr agent wait --until idle,done,blocked,timeout</span>
+
+<span class="cmd">python db/phalanx_db.py</span> dispatch-complete-from-output --dispatch disp_4060b17a --text "<span class="hl">## TASK_COMPLETE ...</span>"
+<span class="comment">→ Task done · dependent Tasks 自动 ready</span></div>
+
+  <div class="callout rule">
+    硬规则：<code>idle</code> 和 <code>done</code> 只表示"现在应读输出"。只有解析的 <code>TASK_COMPLETE</code> 才能正常完成 Dispatch。缺报告 / blocked / unknown / timeout → 证据化 blocked 状态。
+  </div>
+</section>
+
+<!-- ═══════════ SECTION 4: Agent Bus Detail ═══════════ -->
+<section id="bus">
+  <div class="section-label">03 · Agent Bus 队列</div>
+  <h2>N:N 竞争消费的 <span class="accent">lease 状态机</span></h2>
+  <p class="lead">Producer 只管 enqueue，Worker 只管 claim。Route 按 <code>agent_kind + profile</code> 路由，有 <code>max_in_flight</code> 并发上限。lease 到期自动回收，late result 永不覆盖活跃 lease。</p>
+
+  <div class="cli-block"><span class="comment"># Agent Bus 生命周期（CLI 视角）</span>
+
+<span class="cmd">python db/agent_bus.py</span> route-set --agent-kind omp --max-in-flight 2 --default-lease-seconds 300
+<span class="comment">→ route created · enabled</span>
+
+<span class="cmd">python db/agent_bus.py</span> enqueue --caller phalanx-bridge --agent-kind omp --payload '{"instruction":"..."}'
+<span class="comment">→ msg_abc123 · status=pending</span>
+
+<span class="cmd">python db/agent_bus.py</span> worker-loop --worker-id w1 --agent-kind omp --agent-name omp-dev-1
+<span class="comment">→ claim → build envelope → herdr agent prompt → heartbeat</span>
+<span class="comment">→ {claimed:true, delivered:true, lease_id:lease_xyz}</span>
+
+<span class="comment"># Worker 在 TUI 内调用：</span>
+<span class="cmd">python db/agent_bus.py</span> complete --id msg_abc123 --worker-id w1 --lease lease_xyz --result-file result.json --raw-report-file raw.txt
+<span class="comment">→ status=succeeded · callback triggered (if any)</span>
+
+<span class="cmd">python db/agent_bus.py</span> result-ack --caller phalanx-bridge --id msg_abc123
+<span class="comment">→ result_acked_at set · archived</span></div>
+
+  <div class="callout ok">
+    lease triple = <code>(id, worker_id, lease_id)</code>。任何 state-changing 命令必须带完整 triple。<br>
+    late result（lease 已过期的 complete/fail）→ 记录为 Event，<strong>永不</strong>覆盖活跃 lease 的状态。
+  </div>
+</section>
+
+<!-- ═══════════ SECTION 5: Three Layers ═══════════ -->
+<section id="layers">
+  <div class="section-label">04 · 三层拆分</div>
+  <h2>为什么把 Bus 拆成 <span class="accent">Core / Adapter / CLI</span></h2>
+  <p class="lead">原来的 <code>db/agent_bus.py</code> 是 1114 行的上帝模块：业务逻辑 + SQLite + Herdr 专属知识 + argparse 全混在一起。一次跨平台移植要动全部。拆完之后 Core 跨平台、Adapter 替换、CLI 形状保留。</p>
+
+  <div class="grid-3">
+    <div class="card">
+      <h4>🧠 Core</h4>
+      <p><code>db/agent_bus_core.py</code><br>
+      1340 行<br>
+      隐藏 SQLite、lease 状态机、artifact 文件系统、callback 子进程。<br>
+      <strong>可移植</strong>，不依赖 Herdr。</p>
+    </div>
+    <div class="card">
+      <h4>🔌 Herdr Adapter</h4>
+      <p><code>db/herdr_adapter.py</code><br>
+      207 行<br>
+      唯一知道 Herdr 的地方。<br>
+      <code>build_lease_prompt</code> 纯函数<br>
+      <code>HerdrCommanderRunner</code> 用 argv + shell=False</p>
+    </div>
+    <div class="card">
+      <h4>⌨️ CLI Adapter</h4>
+      <p><code>db/agent_bus.py</code><br>
+      556 行（原 1114）<br>
+      argparse + JSON I/O 薄壳。<br>
+      所有原命令名 + JSON 形状保留。<br>
+      新增 <code>worker-loop</code> 子命令。</p>
+    </div>
+  </div>
+
+  <div class="callout info">
+    测试 seam：注入 fake <code>HerdrCommanderRunner</code> 即可验证 Core/Adapter 契约，无需 herdr 二进制。<br>
+    生产注入 <code>SubprocessCommandRunner</code>，legacy 注入 <code>ShellTemplateCommandRunner</code>。
+  </div>
+</section>
+
+<!-- ═══════════ SECTION 6: Envelope ═══════════ -->
+<section id="envelope">
+  <div class="section-label">05 · 受限信封</div>
+  <h2>Worker 只能看到 <span class="accent">4 个命令</span></h2>
+  <p class="lead">lease prompt 是 Bus 给 TUI Worker 的"工作证"。它明确列出 4 个允许命令、5 个禁止命令，并绑定当前 <code>lease_id</code>。Worker 无法 enqueue、无法 claim、无法操作 route。</p>
+
+  <div class="cli-block"><span class="comment"># 实际发送给 Pi 的 lease prompt（节选）</span>
+
+<span class="hl"># Bus Lease (RESTRICTED)</span>
+
+You hold exactly ONE Bus Message. Do NOT call <span class="restricted">enqueue</span> or <span class="restricted">claim</span>.
+Use ONLY the commands listed in this prompt.
+
+## Message
+- id: <span class="str">msg_81b07062a3</span>
+- agent_kind: <span class="str">pi</span>
+- profile: <span class="str">local</span>
+- attempts: <span class="str">2</span>
+- lease_id: <span class="str">lease_PoO3fPNHuwwvKyJnulivQ54iEhASY3kP</span>
+
+## Payload
+```json
+{ "instruction": "Acknowledge with AGENT_BUS_OK only" }
+```
+
+## Allowed Commands
+Set WORKER_ID=&lt;your-herdr-agent-name&gt; and
+ARTIFACT_DIR=~\.herdr-phalanx\runs\agent-bus\msg_81b07062a3\attempt-2
+(create the directory first), then run exactly one of:
+
+<span class="allowed">1.</span> python db/agent_bus.py <span class="cmd">heartbeat</span> --id msg_81b07062a3 --worker-id ${WORKER_ID} --lease lease_PoO3fPNHuwwvKyJnulivQ54iEhASY3kP
+<span class="allowed">2.</span> python db/agent_bus.py <span class="cmd">complete</span> --id msg_81b07062a3 --worker-id ${WORKER_ID} --lease lease_PoO3fPNHuwwvKyJnulivQ54iEhASY3kP --result-file ${ARTIFACT_DIR}/result.json --raw-report-file ${ARTIFACT_DIR}/raw.txt
+<span class="allowed">3.</span> python db/agent_bus.py <span class="cmd">fail</span> --id msg_81b07062a3 --worker-id ${WORKER_ID} --lease lease_PoO3fPNHuwwvKyJnulivQ54iEhASY3kP --reason ${REASON} --raw-report-file ${ARTIFACT_DIR}/raw.txt
+<span class="allowed">4.</span> python db/agent_bus.py <span class="cmd">cancelled</span> --id msg_81b07062a3 --worker-id ${WORKER_ID} --lease lease_PoO3fPNHuwwvKyJnulivQ54iEhASY3kP --reason ${REASON} --raw-report-file ${ARTIFACT_DIR}/raw.txt
+
+## Forbidden
+<span class="restricted">- enqueue, claim, route-set, route-delete, worker-register</span>
+- Any other CLI subcommand of agent_bus.py not listed above</div>
+
+  <div class="callout rule">
+    信封里的 flag 名必须和实际 CLI 完全一致。Pi 在第一次 smoke 里就挑出了 <code>--message-id</code> vs <code>--id</code> 的不匹配 — 修了。
+  </div>
+</section>
+
+<!-- ═══════════ SECTION 7: Real Pi Smoke ═══════════ -->
+<section id="smoke">
+  <div class="section-label">06 · 真实 Pi TUI smoke</div>
+  <h2>不是 fake binary，是 <span class="accent">真 Pi</span></h2>
+  <p class="lead">2026-09-11，workspace <code>wD</code>（<code>phalanx-runtime-inspect-20260908</code>），agent <code>inspect-pi</code> 在 <code>wD:p2</code>。Herdr 0.9.0。</p>
+
+  <div class="grid-2">
+    <div>
+      <h4 style="font-family:'Newsreader',serif;font-size:18px;margin-bottom:12px;color:var(--bus)">事件流</h4>
+      <div class="timeline">
+        <div class="timeline-item"><div class="time">02:59:59</div><div class="evt">route_created</div><div class="detail">pi / local / max_in_flight=1</div></div>
+        <div class="timeline-item"><div class="time">03:00:08</div><div class="evt">message_enqueued</div><div class="detail">msg_81b07062a3 · caller=smoke</div></div>
+        <div class="timeline-item"><div class="time">03:00:19</div><div class="evt">message_claimed</div><div class="detail">worker=smoke-w1 · attempt=1</div></div>
+        <div class="timeline-item"><div class="time">03:04:39</div><div class="evt">lease_expired</div><div class="detail">reaper 回收（测试用 lease=60s）</div></div>
+        <div class="timeline-item"><div class="time">03:10:24</div><div class="evt">message_requeued</div><div class="detail">attempts 归零</div></div>
+        <div class="timeline-item"><div class="time">03:10:24</div><div class="evt">message_claimed</div><div class="detail">worker=smoke-w1 · attempt=1</div></div>
+        <div class="timeline-item"><div class="time">03:10:24</div><div class="evt">message_heartbeat</div><div class="detail">worker_loop_once 投递后立即 heartbeat</div></div>
+        <div class="timeline-item done"><div class="time">03:13:11</div><div class="evt">delivered ✓</div><div class="detail">Pi 收到 envelope · 状态 working</div></div>
+      </div>
+    </div>
+    <div>
+      <h4 style="font-family:'Newsreader',serif;font-size:18px;margin-bottom:12px;color:var(--phalanx)">Pi 的回复</h4>
+      <div class="cli-block" style="font-size:12px">The user is presenting a different bus message format.
+This one says:
+- I hold exactly ONE Bus Message
+- Do NOT call enqueue or claim
+- Use ONLY the commands listed
+
+The message is:
+- id: msg_81b07062a3
+- agent_kind: pi
+- profile: local
+- attempts: 2
+
+The allowed commands reference different CLI syntax
+than what I saw in the actual Python file. The commands
+listed use --message-id, --worker-id, --lease-id,
+--result-json, --report-path - but the actual Python
+CLI uses --id, --worker-id, --lease, --result-file,
+--raw-report-file.
+
+...
+
+AGENT_BUS_OK</div>
+      <p style="font-size:13px;color:var(--muted);margin-top:8px">↑ Pi 第一次 smoke 就指出了 flag 名不匹配。修了。</p>
+    </div>
+  </div>
+
+  <div class="callout ok">
+    最终 JSON：<code>{"claimed":true,"delivered":true,"message_id":"msg_81b07062a3","lease_id":"lease_PoO3fPNHuwwvKyJnulivQ54iEhASY3kP","worker_id":"smoke-w1","agent_name":"inspect-pi","attempt":2}</code>
+  </div>
+</section>
+
+<!-- ═══════════ SECTION 8: File Map ═══════════ -->
+<section id="files">
+  <div class="section-label">07 · 文件地图</div>
+  <h2>什么在哪里，<span class="accent">改了会动谁</span></h2>
+  <p class="lead">按三层架构重新排布。Core 跨平台、Adapter 替换、CLI 形状保留。</p>
+
+  <div class="tree">
+<span class="file-root">herdr-phalanx/</span>
+├── <span class="dir">db/</span>
+│   ├── <span class="file">agent_bus_core.py</span>       <span class="note">← AgentBus 类 · 业务 + SQLite + lease + artifact + callback</span>
+│   ├── <span class="file">herdr_adapter.py</span>        <span class="note">← Herdr Adapter · lease prompt + HerdrCommanderRunner</span>
+│   ├── <span class="file">callback_runner.py</span>      <span class="note">← SubprocessCommandRunner + ShellTemplateCommandRunner</span>
+│   ├── <span class="file">agent_bus.py</span>            <span class="note">← CLI adapter · argparse + JSON I/O · 全部原命令名保留</span>
+│   ├── <span class="file">agent_bus_schema.sql</span>    <span class="note">← bus_callbacks 新增 executable + arguments_json 列</span>
+│   ├── <span class="file">phalanx_db.py</span>           <span class="note">← Phalanx 独立 DB · 与 Bus 不共享连接</span>
+│   └── <span class="dir">tests/</span>
+│       ├── <span class="file">test_agent_bus.py</span>   <span class="note">← 42 tests · 走 CLI adapter 验证</span>
+│       ├── <span class="file">test_herdr_adapter.py</span> <span class="note">← 5 tests · fake runner 验证 prompt envelope</span>
+│       └── <span class="file">test_phalanx_db.py</span>  <span class="note">← 62 tests · Phalanx 单测</span>
+├── <span class="dir">templates/</span>
+│   ├── <span class="file">worker_loop.ps1</span>         <span class="note">← 薄 shim · 调 python db/agent_bus.py worker-loop</span>
+│   ├── <span class="file">agent_bus_supervisor.ps1</span> <span class="note">← 薄 shim · reap + route-status + worker-loop</span>
+│   ├── <span class="file">coordinator_loop.ps1</span>   <span class="note">← Phalanx 协调器 · 薄 Herdr-and-Phalanx adapter</span>
+│   └── <span class="file">agent_bus_worker_preamble.md</span> <span class="note">← Bus Worker 完成协议</span>
+├── <span class="dir">references/</span>
+│   ├── <span class="file">agent-bus-protocol.md</span> <span class="note">← 三层表头 + callback 双路径 + Herdr Adapter 段</span>
+│   └── <span class="file">coordinator-smoke-matrix.md</span> <span class="note">← 含 fake-herdr + 真实 Pi + envelope isolation 行</span>
+├── <span class="dir">docs/adr/</span>
+│   ├── <span class="file">0003-separate-agent-bus-core-from-herdr-adapter.md</span>
+│   └── <span class="file">0004-executable-callback-registry.md</span>
+├── <span class="dir">wiki/</span>
+│   └── <span class="file">agent-bus-real-pi-tui-smoke.md</span> <span class="note">← 本轮 smoke 证据</span>
+├── <span class="file">SKILL.md</span>                    <span class="note">← v0.7.3 · 三层描述 + 新 worker-loop 子命令</span>
+├── <span class="file">AGENTS.md</span>                   <span class="note">← 三层 Repository Shape + 测试 seam 段</span>
+└── <span class="file">CONTEXT.md</span>                  <span class="note">← 新增 AgentBus Core / Herdr Adapter / Command Runner 术语</span>
+  </div>
+</section>
+
+<!-- ═══════════ FOOTER ═══════════ -->
+<footer>
+  <p>Herdr Phalanx + Agent Bus · Architecture Overview</p>
+  <p style="margin-top:12px">
+    <span class="badge">v0.7.3</span>
+    <span class="badge">109 tests</span>
+    <span class="badge">real Pi smoke ✓</span>
+    <span class="badge">herdr 0.9.0</span>
+  </p>
+  <p style="margin-top:16px;font-size:12px">
+    Single-writer orchestration + N:N lease-based queue · one Windows machine · one Herdr session
+  </p>
+</footer>
+
+</body>
+</html>
