@@ -37,6 +37,7 @@ function Invoke-BusQuiet([string[]]$Arguments) {
 }
 
 $reap = Invoke-BusQuiet @("reap")
+$reapStale = Invoke-BusQuiet @("worker-reap-stale")
 $status = Invoke-BusQuiet @("route-status")
 
 $loopArgs = @("worker-loop",
@@ -48,7 +49,8 @@ if ($Profile) { $loopArgs += @("--profile", $Profile) }
 $delivery = Invoke-BusQuiet $loopArgs
 
 Write-Output (ConvertTo-Json -Compress -Depth 4 @{
-    reaped   = if ($reap) { $reap } else { @{ reaped = 0 } }
-    routes   = $status
-    delivery = if ($delivery) { $delivery } else { @{ claimed = $false } }
+    reaped      = if ($reap) { $reap } else { @{ reaped = 0 } }
+    staleReaped = if ($reapStale) { $reapStale } else { @{ reaped = 0 } }
+    routes      = $status
+    delivery    = if ($delivery) { $delivery } else { @{ claimed = $false } }
 })

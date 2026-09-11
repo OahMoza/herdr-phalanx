@@ -565,6 +565,39 @@ class AgentBus:
                     )]
         return self._reader(action)
 
+    def reap_stale_workers(self, stale_seconds: int = 300) -> dict:
+        """Mark workers whose last_seen_at is older than stale_seconds as
+        'dead'.  Pure marker — does not delete rows (preserves audit trail).
+        Returns {"reaped": N, "worker_ids": [...]}."""
+
+        _require(stale_seconds >= 0, ValidationError,
+                 "stale-seconds must be non-negative")
+        cutoff = (datetime.now() - timedelta(seconds=stale_seconds)).isoformat(
+            timespec="seconds")
+
+        def action(conn):
+            rows = conn.execute(
+                """SELECT worker_id FROM bus_workers
+                   WHERE last_seen_at < ? AND status != 'dead'""",
+                (cutoff,),
+            ).fetchall()
+            worker_ids = [row["worker_id"] for row in rows]
+            if worker_ids:
+                placeholders = ",".join("?" * len(worker_ids))
+                conn.execute(
+                    f"""UPDATE bus_workers SET status='dead'
+                        WHERE worker_id IN ({placeholders})""",
+                    worker_ids,
+                )
+                for wid in worker_ids:
+                    self._log(conn, "worker_stale_reaped", actor_id="reaper",
+                              payload={"worker_id": wid,
+                                       "stale_seconds": stale_seconds,
+                                       "cutoff": cutoff})
+            return {"reaped": len(worker_ids), "worker_ids": worker_ids}
+
+        return self._writer(action)
+
     # ---------- message actions ----------
 
     def enqueue(
@@ -743,11 +776,13 @@ class AgentBus:
             target_path, sha = self._copy_artifact(message_id, attempts, raw_report_path)
             result_payload = {"outcome": "failed", "reason": reason or ""}
             next_status = "pending" if attempts < row["max_attempts"] else "dead"
-            return self._write_terminal(
+            result = self._write_terminal(
                 conn, row, next_status, result_payload,
                 target_path, sha, event_type="message_failed",
                 payload_extra={"reason": reason},
             )
+            self._increment_worker_stat(conn, worker_id, "messages_failed")
+            return result
 
         return self._writer(writer)
 
@@ -1231,6 +1266,10 @@ class AgentBus:
                            profile=profile, lease_seconds=lease_seconds)
         if not claim:
             return {"claimed": False, "reason": "no pending message or route full"}
+        # Count as claimed even if delivery subsequently fails.
+        def _bump_claimed(conn):
+            self._increment_worker_stat(conn, worker_id, "messages_claimed")
+        self._writer(_bump_claimed)
         prompt = prompt_builder(dict(claim))
         run_result = commander_runner.run_agent_prompt(
             agent_name=agent_name,
@@ -1309,10 +1348,13 @@ class AgentBus:
             target_path, sha = self._copy_artifact(message_id, attempts, raw_report_path or "")
             event_type = "message_completed" if outcome == "succeeded" else (
                 "message_cancelled" if outcome == "cancelled" else "message_failed")
-            return self._write_terminal(
+            result = self._write_terminal(
                 conn, row, outcome, result_payload, target_path, sha,
                 event_type=event_type,
             )
+            if outcome == "succeeded":
+                self._increment_worker_stat(conn, worker_id, "messages_completed")
+            return result
 
         return self._writer(writer)
 
@@ -1351,6 +1393,20 @@ class AgentBus:
         updated = conn.execute("SELECT * FROM bus_messages WHERE id=?",
                                (row["id"],)).fetchone()
         return self._row_to_message(updated)
+
+    def _increment_worker_stat(self, conn, worker_id, column):
+        """Atomically increment a worker statistic column by 1.
+
+        Uses ``SET col = col + 1`` so concurrent increments never clobber
+        each other.  Silent no-op when the worker does not exist (UPDATE
+        affects 0 rows).
+        """
+        if column not in ("messages_claimed", "messages_completed", "messages_failed"):
+            raise ValueError(f"invalid stat column: {column}")
+        conn.execute(
+            f"UPDATE bus_workers SET {column} = {column} + 1 WHERE worker_id = ?",
+            (worker_id,),
+        )
 
     def _default_callback_runner(self):
         import callback_runner

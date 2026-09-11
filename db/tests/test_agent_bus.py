@@ -800,5 +800,85 @@ class TestSQLiteBusyRetry(_BusTestCase):
         self.assertEqual(rows[0][0], 1)
 
 
+class TestWorkerHealthCheck(_BusTestCase):
+    """Tests for reap_stale_workers: marks workers with stale last_seen_at as dead."""
+
+    def _set_last_seen(self, worker_id: str, last_seen_at: str) -> None:
+        conn = bus._connect()
+        conn.execute("UPDATE bus_workers SET last_seen_at=? WHERE worker_id=?",
+                     (last_seen_at, worker_id))
+        conn.commit()
+        conn.close()
+
+    def _get_worker(self, worker_id: str) -> Any:
+        conn = bus._connect()
+        row = conn.execute("SELECT * FROM bus_workers WHERE worker_id=?",
+                           (worker_id,)).fetchone()
+        conn.close()
+        return row
+
+    def test_stale_worker_marked_dead(self):
+        _run_cli(["worker-register", "--worker-id", "stale-w1",
+                  "--agent-kind", "omp"], self.env)
+        self._set_last_seen("stale-w1", "2000-01-01T00:00:00")
+        result = _run_cli(["worker-reap-stale", "--stale-seconds", "300"],
+                          self.env)
+        self.assertEqual(result["reaped"], 1)
+        self.assertIn("stale-w1", result["worker_ids"])
+        row = self._get_worker("stale-w1")
+        self.assertEqual(row["status"], "dead")
+
+    def test_active_worker_not_reaped(self):
+        _run_cli(["worker-register", "--worker-id", "active-w1",
+                  "--agent-kind", "omp"], self.env)
+        # Heartbeat sets last_seen_at to now, so it should not be reaped.
+        _run_cli(["worker-heartbeat", "--worker-id", "active-w1"], self.env)
+        result = _run_cli(["worker-reap-stale", "--stale-seconds", "300"],
+                          self.env)
+        self.assertEqual(result["reaped"], 0)
+        self.assertEqual(result["worker_ids"], [])
+        row = self._get_worker("active-w1")
+        self.assertEqual(row["status"], "ready")
+
+    def test_already_dead_worker_not_reaped_again(self):
+        _run_cli(["worker-register", "--worker-id", "dead-w1",
+                  "--agent-kind", "omp", "--status", "dead"], self.env)
+        self._set_last_seen("dead-w1", "2000-01-01T00:00:00")
+        result = _run_cli(["worker-reap-stale", "--stale-seconds", "300"],
+                          self.env)
+        self.assertEqual(result["reaped"], 0)
+        self.assertEqual(result["worker_ids"], [])
+        row = self._get_worker("dead-w1")
+        self.assertEqual(row["status"], "dead")
+
+    def test_reap_stale_zero_threshold_marks_all(self):
+        _run_cli(["worker-register", "--worker-id", "z-w1",
+                  "--agent-kind", "omp"], self.env)
+        _run_cli(["worker-register", "--worker-id", "z-w2",
+                  "--agent-kind", "omp"], self.env)
+        # Force last_seen_at into the past so threshold=0 catches them.
+        self._set_last_seen("z-w1", "2000-01-01T00:00:00")
+        self._set_last_seen("z-w2", "2000-01-01T00:00:00")
+        result = _run_cli(["worker-reap-stale", "--stale-seconds", "0"],
+                          self.env)
+        self.assertEqual(result["reaped"], 2)
+        self.assertIn("z-w1", result["worker_ids"])
+        self.assertIn("z-w2", result["worker_ids"])
+        self.assertEqual(self._get_worker("z-w1")["status"], "dead")
+        self.assertEqual(self._get_worker("z-w2")["status"], "dead")
+
+    def test_cli_worker_reap_stale_outputs_json(self):
+        _run_cli(["worker-register", "--worker-id", "json-w1",
+                  "--agent-kind", "omp"], self.env)
+        self._set_last_seen("json-w1", "2000-01-01T00:00:00")
+        # Default --stale-seconds is 300.
+        result = _run_cli(["worker-reap-stale"], self.env)
+        self.assertIsInstance(result, dict)
+        self.assertIn("reaped", result)
+        self.assertIn("worker_ids", result)
+        self.assertEqual(result["reaped"], 1)
+        self.assertEqual(result["worker_ids"], ["json-w1"])
+
+
 if __name__ == "__main__":
     unittest.main()

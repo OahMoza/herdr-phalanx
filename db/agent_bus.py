@@ -267,6 +267,11 @@ def cmd_reap(args: argparse.Namespace) -> None:
     _out({"reaped": total})
 
 
+def cmd_worker_reap_stale(args: argparse.Namespace) -> None:
+    payload = _bus().reap_stale_workers(stale_seconds=args.stale_seconds)
+    _out(payload)
+
+
 def cmd_result_list(args: argparse.Namespace) -> None:
     payload = _bus().list_results(args.caller, after_event=args.after_event)
     _out(payload)
@@ -505,6 +510,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--once", action="store_true", default=True)
     sp.add_argument("--actor", default="operator")
     sp.set_defaults(func=cmd_reap)
+
+    sp = sub.add_parser("worker-reap-stale")
+    sp.add_argument("--stale-seconds", type=int, default=300)
+    sp.set_defaults(func=cmd_worker_reap_stale)
 
     sp = sub.add_parser("result-list")
     sp.add_argument("--caller", required=True)
