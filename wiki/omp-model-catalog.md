@@ -114,24 +114,26 @@ python db/agent_bus.py enqueue --caller smoke --agent-kind omp --profile heavy -
 - **Profile 命名**：建议用 `light` / `medium` / `heavy` 作为 profile，与 intensity 对齐。
 - **与 Pi 的区别**：OMP 用 `--model <id>` 直接指定，不需要 `provider/id` 格式（provider 由 models.yml 自动匹配）。
 
-## Windows Shell 配置
+## Shell 兼容性
 
-**状态**：已修复。
+**状态**：Git Bash 上有兼容问题，WSL bash 正常。
 
-**问题**：OMP 默认 `shellPath` 指向 Git Bash（`E:\Programs\Git\bin\bash.exe`），但用户日常使用 PowerShell。OMP 在 Git Bash 上生成 CMD 语法导致变量展开失败、路径转义错误。
+### 问题
 
-**修复**：将 `~/.omp/agent/settings.json` 的 `shellPath` 改为 `scripts/detect-shell.ps1` 检测到的路径：
+OMP 在 Windows Git Bash 上生成 **CMD 语法**（`set VAR=...`、`%VAR%`、`if exist`），但实际 shell 是 bash。导致变量展开失败、路径转义错误。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/detect-shell.ps1
-# 输出当前平台应使用的 shell 路径
-```
+**对比**：Pi 在相同环境下生成正确的 bash 语法（`${VAR}`），工作正常。
 
-然后将输出写入 `settings.json`：
-```json
-{
-  "shellPath": "<detect-shell.ps1 的输出>"
-}
-```
+### 根因
 
-**注意**：修改后需要 **restart OMP agent** 才能生效（已启动的 agent 仍使用旧 shell）。
+OMP 的 shell tool 在 Git Bash 上错误地检测为 CMD 环境。这是 OMP 的 bug。
+
+### 解决方案
+
+| 方案 | 操作 | 适用场景 |
+|---|---|---|
+| **A. 用 WSL bash** | `shellPath: "/bin/bash"`（WSL 内） | WSL 用户，和 Pi 一致 |
+| **B. 用 PowerShell** | `shellPath: "<detect-shell.ps1 输出>"` | Windows 原生，需 restart |
+| **C. 等 OMP 修复** | 不动 | 不推荐 |
+
+**注意**：修改后需要 **restart OMP agent** 才能生效。

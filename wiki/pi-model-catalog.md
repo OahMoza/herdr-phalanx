@@ -133,6 +133,13 @@ python db/agent_bus.py worker-list
 # → 显示每个 worker 的 model / intensity / messages_completed / status
 ```
 
+## Shell 兼容性
+
+**状态**：✅ 原生 bash，零问题。
+
+Pi 的 shell tool 在 Git Bash / WSL bash 上生成正确的 bash 语法（`${VAR}`、`test -f`）。
+和 OMP 不同，Pi 不存在 CMD 语法混淆问题——OMP 在 Git Bash 上会错误生成 CMD 语法（`set`、`%VAR%`）。
+
 ## 注意事项
 
 - **Herdr 不暴露 model**：`herdr agent get` 不返回 model 字段，Bus 的 model 字段靠注册时手动声明。
