@@ -100,6 +100,21 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 - 运行机制：M:N 竞争消费，1:1 结果回投，lease 串行化多写者。
 - 不引入常驻守护进程：Operator 通过 `templates/agent_bus_supervisor.ps1` 按需驱动。
 
+实现按三层拆分（ADR 0003 / ADR 0004）：
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| Core | `db/agent_bus_core.py` | 隐藏 SQLite、lease 状态机、artifact 文件系统、callback 子进程。Python 跨平台。 |
+| Herdr Adapter | `db/herdr_adapter.py` | 拥有 Herdr 专属知识：受限 lease prompt 模板 + `HerdrCommanderRunner`（用 argv + `shell=False` 调用 `herdr agent prompt`）。 |
+| CLI adapter | `db/agent_bus.py` | argparse + JSON I/O 的薄壳。保留全部原命令名和 JSON 形状；新增 `worker-loop` 子命令（Core claim → Adapter 构造受限 prompt → 投递 → 立即 heartbeat）。 |
+
+Callback 注册支持两条路径：
+
+- `--executable PATH --arguments '[...]'`：推荐路径，`subprocess.run([...], shell=False)`。
+- `--kind command --command-template "..."`：legacy 模板，`shell=True`，保留向后兼容。
+
+PowerShell 模板（`templates/worker_loop.ps1`、`templates/agent_bus_supervisor.ps1`）已收缩为薄 shim，不组装 lease prompt，也不作守护进程运行。
+
 ## 安装
 
 此项目是一个 Skill，不是包管理应用。它需要 Python 标准库和已安装的 Herdr。
@@ -345,12 +360,24 @@ herdr-phalanx/
 ├── db/
 │   ├── schema.sql
 │   ├── phalanx_db.py
-│   └── tests/test_phalanx_db.py
+│   ├── agent_bus_schema.sql
+│   ├── agent_bus_core.py        # AgentBus Core（业务 + SQLite + lease + artifact + callback subprocess）
+│   ├── herdr_adapter.py         # Herdr Adapter（受限 lease prompt + HerdrCommanderRunner）
+│   ├── callback_runner.py       # SubprocessCommandRunner + ShellTemplateCommandRunner
+│   ├── agent_bus.py             # CLI adapter（argparse + JSON I/O）
+│   └── tests/
+│       ├── test_phalanx_db.py
+│       ├── test_agent_bus.py
+│       └── test_herdr_adapter.py
 ├── templates/
 │   ├── coordinator_loop.ps1
-│   └── worker_done_preamble.md
+│   ├── worker_done_preamble.md
+│   ├── agent_bus_worker_preamble.md
+│   ├── worker_loop.ps1          # 薄 shim：调 python db/agent_bus.py worker-loop
+│   └── agent_bus_supervisor.ps1 # 薄 shim：调 reap + route-status + worker-loop
 ├── references/
-│   ├── agent-capability-discovery.md
+│   ├── agent-bus-protocol.md
+│   ├── agent-bus-phalanx-bridge.md
 │   ├── coordinator-smoke-matrix.md
 │   └── herdr-cli-quickref.md
 └── wiki/                         # 追加式历史知识
@@ -358,6 +385,6 @@ herdr-phalanx/
 
 ## 版本和许可
 
-当前版本：`0.7.1`。
+当前版本：`0.7.3`。
 
 [MIT License](./LICENSE) © 2026 OahMoza

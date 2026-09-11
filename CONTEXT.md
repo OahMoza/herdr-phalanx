@@ -39,6 +39,18 @@ Agent Bus is the independent local N:N communication infrastructure introduced b
 - **Bus CLI**: the Python standard-library SQLite CLI that exposes the Bus surface. Sole path that mutates Message state.
 - **Trust boundary**: single-machine local. `worker_id` is an audit identifier, not a cryptographic identity. `agent-bus.db` filesystem permissions are the operational trust boundary.
 
+## Agent Bus implementation layers (ADR 0003)
+
+The Agent Bus is split into three layers; new code should respect the seams.
+
+- **AgentBus Core** (`db/agent_bus_core.py`): the deep module. Hides SQLite, lease state machine, artifact filesystem, callback subprocess, and prompt construction behind a single `AgentBus` class. Portable Python (stdlib only). Knows nothing about Herdr.
+- **Herdr Adapter** (`db/herdr_adapter.py`): owns the only place that knows Herdr's `agent prompt` command. Exposes `build_lease_prompt(msg, agent_kind, profile, python_executable, db_module)` (pure function) and `HerdrCommanderRunner` (subprocess wrapper using a fixed argv list with `shell=False`). The Adapter is the only layer that talks to Herdr.
+- **Bus CLI adapter** (`db/agent_bus.py`): the thin argparse + JSON I/O shell. Every command delegates to the Core. Same command names and response JSON shape as before the refactor; adds the `worker-loop` subcommand.
+- **Command Runner** (`db/callback_runner.py`): a small protocol `(run(args, cwd=None) -> CommandResult)` with two implementations. `SubprocessCommandRunner` uses argv + `shell=False`; `ShellTemplateCommandRunner` uses the legacy `shell=True` template path. The Core picks the runner from the row's shape (`executable` + `arguments_json` vs `command_template`). Tests inject a fake.
+- **Lease Prompt**: the restricted envelope the Herdr Adapter sends to a TUI Worker when a Message is leased. Lists exactly four allowed commands (`heartbeat-message`, `complete`, `fail`, `cancelled`) and explicitly forbids `enqueue`, `claim`, `route-set`, `route-delete`, `worker-register`. The Core claims the lease before construction and heartbeats immediately after the Adapter returns.
+- **Executable Callback**: the modern callback registration path. Stored as `bus_callbacks.executable` + `bus_callbacks.arguments_json` (JSON array of argv entries). Delivered by `SubprocessCommandRunner`. The `shell=True` template path remains as `ShellTemplateCommandRunner` for backward compatibility.
+- **worker-loop**: the new Bus CLI subcommand that wires Core → Herdr Adapter → TUI Worker in a single round trip. Sole integration point between the Bus and Herdr; not a daemon.
+
 ## Cross-layer terms
 
 - **Bridge**: a future module that projects Phalanx Task creation into Bus Message enqueue, and Bus Message completion back into Phalanx Dispatch / Task state. The bridge is **explicitly out of scope** for the Agent Bus PRD and will be specified in `references/agent-bus-phalanx-bridge.md`.
