@@ -1,7 +1,7 @@
 ---
 name: herdr-phalanx
-version: 0.8.0
-description: "Orchestrate named coding agents inside a Herdr TUI workspace with Phalanx Run, Task, Dispatch, Gate, blocking-question, evidence, retry, and 2x2 topology rules. Use for multi-agent task decomposition, dependency-ordered direct dispatch, coordinator supervision, TASK_ASK/TASK_COMPLETE handling, or Herdr pane/team topology. Agent Bus is optional and separate; capability/model inventory belongs to herdr-runtime-init. Requires HERDR_ENV=1 for Herdr control commands."
+version: 0.9.0
+description: "Orchestrate named coding agents inside a Herdr TUI workspace with Phalanx Run, Task, Dispatch, Gate, blocking-question, evidence, retry, and 2x2 topology rules. Use for multi-agent task decomposition, dependency-ordered direct dispatch, coordinator supervision, TASK_ASK/TASK_COMPLETE handling, HRBP worker selection, Constitution-driven artifact loops, or Herdr pane/team topology. Agent Bus is optional and separate; capability/model inventory belongs to herdr-runtime-init. Requires HERDR_ENV=1 for Herdr control commands."
 platforms: [windows]
 ---
 
@@ -28,6 +28,7 @@ changelog:
   - 0.7.3: Agent Bus 分层重构（ADR 0003 + ADR 0004）— Core / Herdr Adapter / CLI adapter 三层
   - 0.7.2: 拆出 reader.ps1，新增 Agent Bus N:N 队列（issue #22）
   - 0.7.1: 明确 managed 与 raw-pane capability 区分，TASK_ASK 解析绑定 dispatch_id
+  - 0.9.0: Pure-Python coordinator — replaces PS1 templates with coordinator-run CLI. Adds HRBP delivery (auto worker selection from Capability Registry) and Constitution-driven artifact loop (HRBP Semi-Auto)
   - 0.7.0: 建立单一 Coordinator 可靠执行闭环（Phalanx DB + 事件驱动循环）
   - 0.6.0: 外挂 sqlite 编排状态数据库（Phalanx DB），Run/Task/Dispatch 三层模型 + DAG
   - 0.5.0: 项目重命名 herdr-orchestrator → herdr-phalanx
@@ -110,20 +111,37 @@ herdr agent start <name> --kind <kind> --pane <pane_id> -- <bypass>
 herdr agent start <name> --kind hermes --pane <pane_id> -- --profile <name>
 ```
 
-### 3. 派活
+### 3. 选择调度模式
+
+| 模式 | 命令 | 适用场景 |
+|---|---|---|
+| **Direct** | `coordinator-run --agent-name <name>` | PM 指定 agent，coordinator 直接派 |
+| **HRBP** | `coordinator-run --delivery-mode hrbp` | PM 只说"要一个 medium Developer"，coordinator 从 Registry 选 |
+| **Artifact-v1** | `coordinator-run --workflow-version artifact-v1` | Constitution 驱动，coordinator 自己推进 DAG |
 
 ```bash
-herdr agent prompt <name> "<preamble> <work>"
-herdr agent wait <name> --until idle,done,blocked --timeout <ms>
+# Direct
+python db/phalanx_db.py coordinator-run --run <run_id> --coordinator hermes --agent-name dev1 --pane w1:p1
+
+# HRBP（自动选 worker）
+python db/phalanx_db.py coordinator-run --run <run_id> --coordinator hermes --delivery-mode hrbp
+
+# Artifact-v1（Constitution 驱动）
+python db/phalanx_db.py coordinator-run --run <run_id> --coordinator hermes --workflow-version artifact-v1
 ```
 
 ### 4. 验收
 
-```bash
-$output = herdr agent read <name> | Out-String
-python db/phalanx_db.py dispatch-complete-from-output --dispatch $id --text $output
-```
+Coordinator 内部自动验收：解析 `TASK_COMPLETE` → 尝试 complete → 尝试 ask → 否则 block。
+需要人工干预时：
 
+```bash
+# 手动通过
+python db/phalanx_db.py dispatch-complete-from-output --dispatch <id> --coordinator hermes --text "<output>"
+
+# 手动阻塞
+python db/phalanx_db.py dispatch-block --dispatch <id> --coordinator hermes --state blocked --reason "manual" --evidence '{}'
+```
 只有解析并持久化的 Worker 报告构成业务证据。普通编排到此不需要 Agent Bus；明确需要竞争消费或异步 Worker 池时再加载 `skills/herdr-agent-bus/SKILL.md`。
 
 ---
