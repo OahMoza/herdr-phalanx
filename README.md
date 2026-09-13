@@ -2,12 +2,13 @@
 
 Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行多个编码智能体，并用 SQLite 保存每次任务运行、工作项、执行记录、智能体能力和事件证据。
 
-它解决问题的方式分两层：
+它提供三个按意图加载的 Skill 入口，共用同一份 clone 中的运行时代码：
 
-- 业务编排层（Phalanx DB）：单一 Coordinator 的 Run / Task / Dispatch / Gate / Event 模型。
-- 通信基础设施层（Agent Bus）：独立 N:N 队列基础设施，支持多 Producer、多 Worker 竞争消费，事件游标定向回投。
+- `herdr-runtime-init`：盘点本机 Agent、Profile、模型、调用强度和验证证据。
+- `herdr-phalanx`：默认主流程；用单一 Coordinator 的 Run / Task / Dispatch / Gate / Event 模型直接编排具名 Worker。
+- `herdr-agent-bus`：高级可选能力；仅用于多 Producer、匿名 Worker 竞争消费、lease、DLQ、回调和可靠异步回投。
 
-它解决的问题不是“如何启动很多智能体”，而是“如何可靠地分配、跟踪、完成或阻塞工作”。
+它解决的问题不是“如何启动很多智能体”，而是“如何可靠地分配、跟踪、完成或阻塞工作”。普通 Phalanx 编排不需要 Agent Bus。
 
 ```text
 任务协调器
@@ -89,9 +90,11 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 
 重要规则：Herdr 的 `idle` 和 `done` 只表示“现在应读取输出”。它们不表示工作项成功。只有已解析的 `TASK_COMPLETE` 才能正常完成执行记录。
 
-## Agent Bus
+## Agent Bus（高级可选）
 
-独立于业务编排层的多 Agent 通信基础设施：
+仅在需要匿名 Worker 池、竞争消费、lease、DLQ 或可靠异步回投时使用。普通 Run / Task / Dispatch 默认直接使用 Herdr，不经过 Bus。
+
+Agent Bus 是独立于业务编排层的多 Agent 通信基础设施：
 
 - 数据库：`~/.herdr-phalanx/agent-bus.db`（可被 `AGENT_BUS_DB` 覆盖）。
 - 原始证据：`~/.herdr-phalanx/runs/agent-bus/`（可被 `AGENT_BUS_ARTIFACTS` 覆盖）。
@@ -350,6 +353,16 @@ python -m unittest db.tests.test_phalanx_db -v
 
 真实 Herdr 冒烟验证必须在隔离 Workspace 中执行。检查项见 [`references/coordinator-smoke-matrix.md`](references/coordinator-smoke-matrix.md)。
 
+## 新能力（v0.8.0）
+
+- **Artifact/DAG 工作流**：不可变版本化产物、独立 Reviewer Gate、精确输入 pin。
+- **递归委派**：Child Run 拥有独立写入者，有限继承预算。
+- **Relay Inbox**：持久通知投递、有界唤醒。
+- **拓扑分配**：独占 Workspace/Tab/Pane 所有权。
+- **生命周期闭环**：Amendment、协作式取消、红队发现、Formal Evidence Set。
+- **Coordinator 能力验证**：独立于 Worker 验证的 Coordinator smoke 合同。
+- **三 Skill 入口**：Runtime Init / Phalanx / Agent Bus。
+
 ## 项目文件
 
 ```text
@@ -357,6 +370,9 @@ herdr-phalanx/
 ├── README.md
 ├── SKILL.md
 ├── AGENTS.md
+├── skills/
+│   ├── herdr-runtime-init/SKILL.md
+│   └── herdr-agent-bus/SKILL.md
 ├── db/
 │   ├── schema.sql
 │   ├── phalanx_db.py
@@ -385,6 +401,6 @@ herdr-phalanx/
 
 ## 版本和许可
 
-当前版本：`0.7.3`。
+当前版本：`0.8.0`。
 
 [MIT License](./LICENSE) © 2026 OahMoza

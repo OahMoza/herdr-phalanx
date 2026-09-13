@@ -28,20 +28,26 @@ A successful `agent start` proves only interactive readiness. It does not prove 
 
 ## Facts To Persist Per Observation
 
-- Agent kind and optional profile.
+- Agent kind, optional profile, and capability scope: `execution` or `coordinator`.
 - Execution mode: `managed` or `raw-pane`.
 - Resolved executable path, command type, version, and help signature.
 - Herdr version and integration or detection evidence.
-- Discovery and verification timestamps.
-- Native launch arguments, including permission mode when applicable.
+- Native model identifier and invocation parameters.
+- Normalized planning intensity: `low`, `medium`, or `high`; retain the native value alongside it.
+- Native launch arguments, permission mode, detected shell path, and redacted configuration hash.
+- Canonical SHA-256 fingerprint over the fields above.
+- Discovery/verification timestamp and maximum evidence age.
 - Startup, lifecycle, output-read, parser, and smoke-Dispatch result.
 - Failure signature and evidence location when verification fails.
 
-The record is a machine observation. A cached successful verification is advisory and must be refreshed after an executable, PATH, Herdr, integration, profile, or configuration change.
+The record is append-only machine evidence. Its effective level becomes `stale` when the supplied current fingerprint differs or maximum age expires; historical `verified` rows are never rewritten. A newer degraded or stale observation must not fall back to an older verified row.
+
+Durable compatibility is not transient availability. Before reservation or dispatch, perform a lightweight current check for authentication/readiness, provider and model availability, and immediately observable quota/service failure. A compatible but unavailable Agent is not schedulable.
 
 ## Control Surface Boundary
 
-- A managed Task can claim only a verified `managed` capability with the required Role.
+- A managed Task can claim only a current, fingerprint-matching verified `managed` execution capability with the required Role, followed by transient availability preflight.
+- Coordinator capability is a separate scope and remains unschedulable until the later Coordinator smoke contract is implemented; Worker verification never implies it.
 - A `raw-pane` capability is for explicit stateless work through `pane run` and `pane wait-output`; it cannot claim a managed Task or use `coordinator_loop.ps1`.
 - Pi's current supported path is `raw-pane` with `pi -p`, not `herdr agent start --kind pi`.
 

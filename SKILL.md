@@ -1,20 +1,29 @@
 ---
 name: herdr-phalanx
-version: 0.7.4
-description: "Use when orchestrating multiple coding agents inside a Herdr TUI workspace. Triggers: Herdr pane/agent management, multi-agent team setup, parallel coding work, dispatcher role, ontology-based team design, evolving role/agent registry, open-world role pool, grid topology / 2x2 phalanx pane layout, per-tab agent cap. Built on open ontology: agent count and role set are NOT fixed — both grow at runtime via assign(). Hermes is the dispatcher, NEVER a pane-internal agent. NOT for single-agent tasks, casual shell use, or anything outside Herdr (HERDR_ENV must be 1)."
+version: 0.8.0
+description: "Orchestrate named coding agents inside a Herdr TUI workspace with Phalanx Run, Task, Dispatch, Gate, blocking-question, evidence, retry, and 2x2 topology rules. Use for multi-agent task decomposition, dependency-ordered direct dispatch, coordinator supervision, TASK_ASK/TASK_COMPLETE handling, or Herdr pane/team topology. Agent Bus is optional and separate; capability/model inventory belongs to herdr-runtime-init. Requires HERDR_ENV=1 for Herdr control commands."
 platforms: [windows]
 ---
 
 # Herdr Phalanx
 
-编排型 skill：在 Herdr 多路复用器内把多个 coding agent 组织成"项目团队"，由 Hermes 担任 dispatch / 协调者。
+兼容入口：在 Herdr 多路复用器内把多个 coding agent 组织成“项目团队”，由 Hermes 担任 dispatch / 协调者。
+
+新安装按意图加载三个入口：
+
+- 根 `SKILL.md`（`herdr-phalanx`）：默认的 Run / Task / Dispatch / Gate 编排与直接 Herdr 派发。
+- `skills/herdr-runtime-init/SKILL.md`：发现本地 Agent、Profile、模型、调用强度与能力证据。
+- `skills/herdr-agent-bus/SKILL.md`：仅在需要匿名 Worker 池、竞争消费、lease、DLQ 或可靠异步回投时加载。
+
+Agent Bus 是高级可选基础设施，不是普通 Phalanx 工作流的必经阶段。
 
 ## 升级接口（Versioning）
 
 ```
-version: 0.7.4
-schema: herdr-phalanx.onto.v2
+version: 0.8.0
+schema: herdr-phalanx.onto.v3
 changelog:
+  - 0.8.0: 三 Skill 意图边界 — Phalanx 默认直接编排，Runtime Init 独立，Agent Bus 降为高级可选
   - 0.7.4: 拆分 SKILL.md — 核心行为保留，拓扑规则/员工/Pitfalls 拆到 references/
   - 0.7.3: Agent Bus 分层重构（ADR 0003 + ADR 0004）— Core / Herdr Adapter / CLI adapter 三层
   - 0.7.2: 拆出 reader.ps1，新增 Agent Bus N:N 队列（issue #22）
@@ -80,6 +89,10 @@ Shell 路径通过 `scripts/detect-shell.ps1` 动态检测，不硬编码。Wind
 
 ## 工作流程
 
+### 0. 初始化调度能力
+
+需要盘点或刷新本机 Agent、Profile、模型、调用强度与验证证据时，加载 `skills/herdr-runtime-init/SKILL.md`。能力目录不等于正式派活。
+
 ### 1. 准备 pane（按 Grid Topology）
 
 详见 `references/topology-rules.md`。核心：每 tab 最多 4 pane 田字格，超 4 开新 tab，dispatcher 独占指挥 tab。
@@ -111,6 +124,8 @@ $output = herdr agent read <name> | Out-String
 python db/phalanx_db.py dispatch-complete-from-output --dispatch $id --text $output
 ```
 
+只有解析并持久化的 Worker 报告构成业务证据。普通编排到此不需要 Agent Bus；明确需要竞争消费或异步 Worker 池时再加载 `skills/herdr-agent-bus/SKILL.md`。
+
 ---
 
 ## 员工 / 拓扑 / Pitfalls（按需加载）
@@ -130,6 +145,6 @@ python db/phalanx_db.py dispatch-complete-from-output --dispatch $id --text $out
 - `agents:` — 新增员工。详见 `references/agent-roster.md`。
 - `roles:` — 新增角色。
 - `topologies:` — 新增团队原型。v0.4.2 起物理分屏拓扑强制走 `references/topology-rules.md`。
-- `artifacts:` — 任务账本格式：`runs/<task-id>/task.md` + `raw.jsonl`。
+- `artifacts:` — Artifact 权威格式：不可变版本化文件 + Phalanx DB 元数据（identity, version, sha256, producer, status, Gate linkage）。详见 `references/artifact-dag-workflow.md`。
 - `protocols:` — 跨 agent 通信协议。
 - `evolution:` — WikiSkill 自演化协议。

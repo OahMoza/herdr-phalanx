@@ -37,3 +37,11 @@ summary: 做了什么。发现了什么。还剩什么。
     ```
    `dispatch_id` 和 `question` 必须存在。等待任务协调器以新消息回复后再继续。
 6. 不要在 TASK_COMPLETE 之后再输出其他内容
+
+## Artifact-led 任务附加规则（仅当任务消息提供 Artifact Contract 时）
+
+- 只读取消息中列出的 accepted input Artifact ID、路径和 SHA-256。
+- 只写消息中声明的候选输出路径；不得修改其他 Task 的 Artifact。
+- `files_modified` 中列出的只是候选源文件，不能直接写 `PHALANX_ARTIFACTS` 权威目录。
+- Coordinator 会校验、复制、哈希并注册候选 Artifact；`TASK_COMPLETE` 不代表 Artifact 或 Task 已被验收。
+- Review Task 使用 `reviewer_preamble.md` 的只读证据协议。

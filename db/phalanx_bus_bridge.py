@@ -305,30 +305,27 @@ def on_message_complete(
     *,
     coordinator: str = "phalanx-bridge",
 ) -> dict:
-    """Promote a completed Bus Message back into Phalanx Dispatch / Task state.
+    """Ingest a completed Bus Message into Phalanx as candidate evidence.
 
-    Parameters
-    ----------
-    bus_message:
-        Bus Message dict (as returned by ``AgentBus`` / result-list) with at
-        least ``id``, ``status``, ``result`` keys.
-    phalanx_db_path:
-        Path to the Phalanx DB file.
-    bus_db_path:
-        Path to the Agent Bus DB file (unused today; reserved for artifact
-        cross-references).
-    coordinator:
-        Identity used when asserting run ownership.
+    Artifact-led Tasks are NOT completed directly. The result becomes Gate
+    input; only gate-resolve --resolution pass promotes the Artifact and
+    completes the Task.
 
     Returns
     -------
-    dict with keys ``updated`` (bool), ``reason`` (str), ``dispatch_id``.
+    dict with keys updated (bool), reason (str), dispatch_id.
     """
     message_id = bus_message["id"]
 
+    if bus_message.get("status") != "succeeded":
+        return {
+            "updated": False,
+            "reason": f"bus message status is {bus_message.get('status')}, not succeeded",
+            "dispatch_id": None,
+        }
+
     ph_conn = _phalanx_conn(phalanx_db_path)
     try:
-        # --- locate the mapping ----------------------------------------
         map_row = ph_conn.execute(
             "SELECT * FROM bus_message_map WHERE message_id=?", (message_id,)
         ).fetchone()
@@ -342,7 +339,6 @@ def on_message_complete(
         dispatch_id = map_row["dispatch_id"]
         task_id = map_row["task_id"]
 
-        # --- guard: terminal dispatch ----------------------------------
         if dispatch_id:
             disp = ph_conn.execute(
                 "SELECT * FROM dispatches WHERE id=?", (dispatch_id,)
@@ -354,7 +350,6 @@ def on_message_complete(
                     "dispatch_id": dispatch_id,
                 }
 
-        # --- parse result ----------------------------------------------
         result = bus_message.get("result")
         if isinstance(result, str):
             try:
@@ -362,19 +357,49 @@ def on_message_complete(
             except json.JSONDecodeError:
                 result = {"outcome": "failed", "reason": "unparseable result"}
 
-        outcome = "succeeded"
-        summary = ""
-        files_modified: list[str] = []
-        if isinstance(result, dict):
-            outcome = result.get("outcome", "succeeded")
-            summary = result.get("summary", "")
-            if isinstance(result.get("files_modified"), list):
-                files_modified = result["files_modified"]
+        if not isinstance(result, dict) or "outcome" not in result:
+            return {
+                "updated": False,
+                "reason": "bus result is missing required 'outcome' field",
+                "dispatch_id": dispatch_id,
+            }
 
-        # --- promote through dispatch state machine --------------------
+        outcome = result["outcome"]
+        summary = result.get("summary", "")
+        files_modified = result.get("files_modified", [])
+        if not isinstance(files_modified, list):
+            files_modified = []
+
+        task = ph_conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if not task:
+            return {
+                "updated": False,
+                "reason": f"task {task_id} not found",
+                "dispatch_id": dispatch_id,
+            }
+
+        run = ph_conn.execute(
+            "SELECT * FROM runs WHERE id=?", (task["run_id"],)
+        ).fetchone()
+        if run and run["workflow_version"] != "legacy-v1":
+            if not coordinator:
+                return {
+                    "updated": False,
+                    "reason": "artifact-led Bus ingestion requires --coordinator",
+                    "dispatch_id": dispatch_id,
+                }
+            if run["coordinator"] != coordinator:
+                return {
+                    "updated": False,
+                    "reason": f"run {task['run_id']} is owned by {run['coordinator']}",
+                    "dispatch_id": dispatch_id,
+                }
+
+        now_ts = datetime.now().isoformat(timespec="seconds")
         if dispatch_id:
             dispatch_status = "completed" if outcome == "succeeded" else "failed"
-            now_ts = datetime.now().isoformat(timespec="seconds")
             files_json = json.dumps(files_modified, ensure_ascii=False)
             ph_conn.execute(
                 """UPDATE dispatches
@@ -383,14 +408,21 @@ def on_message_complete(
                 (dispatch_status, outcome, files_json, summary, now_ts, dispatch_id),
             )
 
-        # --- promote task ----------------------------------------------
-        task = ph_conn.execute(
-            "SELECT * FROM tasks WHERE id=?", (task_id,)
-        ).fetchone()
-        if task:
+        if task["acceptance_mode"] == "artifact":
+            result_json = json.dumps(
+                {"outcome": outcome, "summary": summary, "files_modified": files_modified},
+                ensure_ascii=False,
+            )
+            ph_conn.execute(
+                """UPDATE tasks
+                   SET status='awaiting_acceptance', result=?, updated_at=?
+                   WHERE id=?""",
+                (result_json, now_ts, task_id),
+            )
+        else:
             if outcome == "succeeded":
                 task_status = "completed"
-                completed_at = now_ts if dispatch_id else datetime.now().isoformat(timespec="seconds")
+                completed_at = now_ts
             else:
                 retry_count = task["retry_count"]
                 max_retries = task["max_retries"]
@@ -405,22 +437,15 @@ def on_message_complete(
                 """UPDATE tasks
                    SET status=?, result=?, updated_at=?, completed_at=?
                    WHERE id=?""",
-                (
-                    task_status,
-                    result_json,
-                    datetime.now().isoformat(timespec="seconds"),
-                    completed_at,
-                    task_id,
-                ),
+                (task_status, result_json, now_ts, completed_at, task_id),
             )
 
-        # --- audit event ------------------------------------------------
         event_type = "worker_done" if outcome == "succeeded" else "worker_failed"
         ph_conn.execute(
             """INSERT INTO events (run_id, task_id, dispatch_id, event_type, payload)
                VALUES (?,?,?,?,?)""",
             (
-                task["run_id"] if task else None,
+                task["run_id"],
                 task_id,
                 dispatch_id,
                 event_type,
@@ -434,8 +459,10 @@ def on_message_complete(
 
         return {
             "updated": True,
-            "reason": f"promoted to {outcome}",
+            "reason": f"ingested as {outcome}",
             "dispatch_id": dispatch_id,
         }
     finally:
         ph_conn.close()
+
+
