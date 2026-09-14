@@ -139,13 +139,20 @@ PowerShell 模板（`templates/worker_loop.ps1`、`templates/agent_bus_superviso
 
 ## 安装
 
-此项目是一个 Skill，不是包管理应用。它需要 Python 标准库和已安装的 Herdr。
+此项目包含三个 Skill，共用完整仓库中的 Python 运行时；需要 Python 标准库和已安装的 Herdr。
 
 ```powershell
 git clone git@github.com:OahMoza/herdr-phalanx.git $HOME\herdr-phalanx
 Set-Location $HOME\herdr-phalanx
+
+# 默认检索应列出 herdr-phalanx、herdr-runtime-init、herdr-agent-bus
+npx skills add . --list
+npx skills add . --skill '*' --agent pi -y
+
 python db/phalanx_db.py init-db
 ```
+
+Skill 安装后重启 Pi，Slash 自动补全会显示 `/skill:herdr-phalanx`、`/skill:herdr-runtime-init` 和 `/skill:herdr-agent-bus`。若 clone 不在 `$HOME\herdr-phalanx`，启动 Pi 前设置 `HERDR_PHALANX_ROOT` 为 clone 的绝对路径。
 
 
 ### 快速使用（v0.9.0 — coordinator-run）
@@ -343,7 +350,7 @@ options: ["保留旧数据", "重建数据库"]
 | `degraded` | 最近的冒烟验证失败。 | 不可以。 |
 | `unknown` | 没有足够证据。 | 不可以。 |
 
-能力证据是当前机器的事实。`SKILL.md` 中的 Agent 和职责映射只是候选策略。`wiki/` 中的记录是历史证据，不能替代当前验证。
+能力证据是当前机器的事实。`skills/herdr-phalanx/SKILL.md` 中的 Agent 和职责映射只是候选策略。`wiki/` 中的记录是历史证据，不能替代当前验证。
 
 ## Herdr 控制面规则
 
@@ -365,7 +372,7 @@ options: ["保留旧数据", "重建数据库"]
 - 任务协调器保留在单独的指挥 Tab，不占 Worker 网格。
 - 不主动关闭用户没有要求关闭的资源。
 
-详细拓扑见 [`SKILL.md`](SKILL.md)。
+详细拓扑见 [`skills/herdr-phalanx/SKILL.md`](skills/herdr-phalanx/SKILL.md)。
 
 ## 验证
 
@@ -405,9 +412,9 @@ python -m unittest db.tests.test_phalanx_db -v
 ```text
 herdr-phalanx/
 ├── README.md
-├── SKILL.md
 ├── AGENTS.md
 ├── skills/
+│   ├── herdr-phalanx/SKILL.md
 │   ├── herdr-runtime-init/SKILL.md
 │   └── herdr-agent-bus/SKILL.md
 ├── db/

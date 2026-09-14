@@ -16,7 +16,7 @@ This is a single-context repository. See `docs/agents/domain.md`.
 
 ## Repository Shape
 
-- This is a Windows-focused Herdr orchestration skill, not a package-managed application. `SKILL.md` is the primary behavior specification; `references/herdr-cli-quickref.md` is the verified Herdr v0.8.2 command reference.
+- This is a Windows-focused Herdr orchestration skill, not a package-managed application. `skills/herdr-phalanx/SKILL.md` is the primary behavior specification; `references/herdr-cli-quickref.md` is the verified Herdr v0.8.2 command reference.
 - The executable components are two independent Python standard-library SQLite layers, each split into Core + CLI adapter:
   - Phalanx (`db/phalanx_db.py` with `db/schema.sql`): Run / Task / Dispatch orchestration, single-writer per active Run.
   - Agent Bus (`db/agent_bus.py` CLI adapter with `db/agent_bus_schema.sql`): N:N lease-based queue, multi-writer row-level. The bus implementation is split into:
@@ -51,4 +51,4 @@ This is a single-context repository. See `docs/agents/domain.md`.
 
 - `runs/` is ignored raw, machine-specific trace data. Do not add it to Git.
 - `wiki/` is append-only institutional memory. Preserve failed or obsolete knowledge; add a new/versioned article rather than rewriting or deleting historical entries.
-- When changing `SKILL.md`, keep the frontmatter version/changelog and `Upgrade Hooks` synchronized. Changes to ontology entities or relations also require a schema version bump.
+- When changing `skills/herdr-phalanx/SKILL.md`, keep the frontmatter version/changelog and `Upgrade Hooks` synchronized. Changes to ontology entities or relations also require a schema version bump.
