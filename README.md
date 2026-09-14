@@ -48,33 +48,52 @@ Herdr Phalanx 是一个 Windows 本地任务协调器。它在 Herdr 中运行�
 | 租约 | Lease | Bus 消息的临时独占执行权。 |
 | 结果 | Result | Bus 消息的可靠回投结果，与业务验收解耦。 |
 
-## 用户故事
+## 用户故事（v0.9.0 — coordinator-run 三种模式）
 
-### 作为任务协调器
+### 故事 1：指定 agent 干活（Direct 模式）
 
-- 我可以创建一个带身份的任务运行，因此只有我能修改这个任务运行的工作项和执行记录。
-- 我可以安全发现本机 Agent 命令、配置档、版本和 Herdr 集成状态，而不自动启动所有 Agent。
-- 我可以验证一个执行智能体，因此只有完成完整冒烟执行的智能体才会被分配真实工作。
-- 我可以为一个依赖已完成的工作项选择符合职责的已验证执行智能体。
-- 我可以原子地领取工作项、创建执行记录、增加重试次数并写入事件，因此同一个工作项不会被重复分配。
-- 我可以在重启后从 SQLite 恢复任务运行、工作项、执行记录和能力证据。
+> 我是 PM，我要让 claude-dev 帮我修一个 bug。
 
-### 作为执行智能体
+| 阶段 | 用哪个 skill | 说什么 |
+|---|---|---|
+| **初始化** | `herdr-runtime-init` | "盘点一下本机有哪些 agent、profile 和模型" |
+| **干活** | `herdr-phalanx` | "用 Direct 模式让 claude-dev 修复 src/auth.ts 的空指针 bug" |
 
-- 我接收包含工作内容和完成协议的任务消息。
-- 我完成工作后输出 `TASK_COMPLETE`，报告成功或失败、修改文件和摘要。
-- 我需要帮助时可以输出 `TASK_ASK`，由任务协调器决定下一步。
-- 我不直接写 SQLite，不直接修改工作项状态。
+内部走 `coordinator-run --agent-name claude-dev --pane w1:p1`
 
-### 作为使用者
+### 故事 2：让 coordinator 自己选人（HRBP 模式）
 
-- 我可以看到哪个执行智能体处理了哪个工作项，以及它所在的 Pane 和 Tab。
-- 我可以看到工作为何成功、失败、阻塞或需要重试。
-- 我不会因为 Herdr 显示 `idle`、`done`、`unknown` 或超时，就得到一个没有证据的“成功”结果。
-- 我可以继续使用 2x2 Worker 网格：每个 Worker Tab 最多四个执行智能体，第五个执行智能体使用新 Tab；任务协调器不进入 Worker 网格。
+> 我需要一个 medium 强度的 Developer 帮我写单元测试。
+
+| 阶段 | 用哪个 skill | 说什么 |
+|---|---|---|
+| **初始化** | `herdr-runtime-init` | "看看本机有哪些 verified 的 Developer worker" |
+| **干活** | `herdr-phalanx` | "用 HRBP 模式给 UserService 写单元测试，medium 强度" |
+
+内部走 `coordinator-run --delivery-mode hrbp`，coordinator 查 Registry 自动选 verified+空闲 worker
+
+### 故事 3：Constitution 驱动项目（Artifact-v1 模式）
+
+> 我已经写好了 Constitution（含 DAG、Checklist、budget），让 coordinator 自己推进。
+
+| 阶段 | 用哪个 skill | 说什么 |
+|---|---|---|
+| **初始化** | `herdr-runtime-init` | "本机有哪些 verified worker？确保 Constitution 要求的角色都能匹配上人" |
+| **干活** | `herdr-phalanx` | "用 Artifact-v1 模式驱动 constitution.json，coordinator 自己推进 DAG" |
+
+内部走 `coordinator-run --workflow-version artifact-v1`，coordinator 读 Constitution → 自己推进 ready task → 自动过 Gate
+
+### 模式速查
+
+| 模式 | coordinator-run 参数 | 适用场景 |
+|---|---|---|
+| **Direct** | `--agent-name <name> --pane <id>` | PM 指定具体 agent |
+| **HRBP** | `--delivery-mode hrbp` | PM 只说"要一个 medium Developer"，coordinator 选人 |
+| **Artifact-v1** | `--workflow-version artifact-v1` | Constitution 驱动，coordinator 自动推进 DAG |
+
+## 用户故事（经典 — 手动步骤）
 
 ## 工作流程
-
 ```text
 1. 任务协调器创建任务运行
 2. 记录或查询本机智能体能力证据
@@ -128,6 +147,24 @@ Set-Location $HOME\herdr-phalanx
 python db/phalanx_db.py init-db
 ```
 
+
+### 快速使用（v0.9.0 — coordinator-run）
+
+```powershell
+# 创建 Run
+$run = python db/phalanx_db.py run-create --objective "修复登录" --coordinator hermes-main | ConvertFrom-Json
+
+# Direct：指定 agent
+python db/phalanx_db.py coordinator-run --run $run.id --coordinator hermes-main --agent-name dev1 --pane w1:p1
+
+# HRBP：自动选 worker
+python db/phalanx_db.py coordinator-run --run $run.id --coordinator hermes-main --delivery-mode hrbp
+
+# Artifact-v1：Constitution 驱动
+python db/phalanx_db.py coordinator-run --run $run.id --coordinator hermes-main --workflow-version artifact-v1
+```
+
+ ### 1. 创建任务运行
 默认数据库路径是 `~/.herdr-phalanx/phalanx.db`。测试和冒烟验证应使用独立路径：
 
 ```powershell
