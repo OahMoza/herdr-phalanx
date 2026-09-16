@@ -2162,6 +2162,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--workflow-version", choices=["legacy-v1", "artifact-v1"], default="legacy-v1")
     sp.add_argument("--workflow-profile", choices=["compact", "standard", "deep"])
     sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_run_create)
 
     sp = sub.add_parser("run-list")
     sp.add_argument("--table", action="store_true")
