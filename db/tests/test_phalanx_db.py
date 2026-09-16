@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -90,6 +91,43 @@ class TestParseWorkerDone(unittest.TestCase):
         text = "Some output without any marker."
         result = db.parse_worker_done(text)
         self.assertFalse(result["parsed"])
+
+
+class TestRunCreateCli(unittest.TestCase):
+    def test_run_create_dispatches_to_handler(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["PHALANX_DB"] = str(Path(tmp) / "phalanx.db")
+            cli = str(Path(db.__file__))
+
+            initialized = subprocess.run(
+                [sys.executable, cli, "init-db"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+
+            created = subprocess.run(
+                [
+                    sys.executable,
+                    cli,
+                    "run-create",
+                    "--objective",
+                    "smoke",
+                    "--workspace",
+                    "w1",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(created.returncode, 0, created.stderr)
+            payload = json.loads(created.stdout)
+            self.assertEqual(payload["status"], "active")
+            self.assertEqual(payload["objective"], "smoke")
+            self.assertEqual(payload["workspace_id"], "w1")
 
 
 class TestRunLifecycle(unittest.TestCase):
